@@ -685,6 +685,9 @@ class TestsetImpl(testsuite.Testset):
     def get_property(self, name):
         return self.runner.get_property(name)
 
+    def get_platform(self):
+        return self.runner.get_platform()
+
     def set_name(self, name):
         self.name = name
 
@@ -803,7 +806,7 @@ class Runner():
     def __init__(self, config='default', load_average=0.9, nb_threads=0, properties=None,
             stdout=False, safe_stdout=False, max_output_len=-1, max_timeout=-1,
             test_list=None, test_skip_list=None, commands=None, commands_exclude=None,
-            flags=None, bench_csv_file=None, bench_regexp=None, targets=None):
+            flags=None, bench_csv_file=None, bench_regexp=None, targets=None, platform='gvsoc'):
         self.nb_threads = nb_threads
         self.queue = queue.Queue()
         self.testsets = []
@@ -825,6 +828,7 @@ class Runner():
         self.test_list = test_list
         self.targets = targets
         self.default_target = Target('default')
+        self.platform = platform
         if self.targets is None:
             self.targets = [ 'default' ]
         self.cpu_poll_interval = 0.1
@@ -842,6 +846,9 @@ class Runner():
 
     def get_active_targets(self):
         return self.targets
+
+    def get_platform(self):
+        return self.platform
 
     def get_property(self, name):
         return self.properties.get(name)

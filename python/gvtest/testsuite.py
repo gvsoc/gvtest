@@ -54,6 +54,9 @@ class Testset(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_property(self, name): pass
 
+    @abc.abstractmethod
+    def get_platform(self): pass
+
 
 
 class Test(object, metaclass=abc.ABCMeta):

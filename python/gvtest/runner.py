@@ -724,36 +724,32 @@ class TestsetImpl(testsuite.Testset):
         return self.name
 
     def import_testset(self, file):
-        active_targets = self.runner.get_active_targets()
         filepath = file
         if self.path is not None:
             filepath = os.path.join(self.path, file)
 
-        if len(self.targets) == 0:
-            self.testsets.append(self.runner.import_testset(filepath, self.target, self))
-        else:
-            targets = active_targets
-            if len(self.targets) != 0 and len(targets) == 1 and targets[0] == 'default':
-                targets = self.targets
-
-            for target_name in targets:
-                target = self.targets.get(target_name)
-                if target is not None:
-                    self.testsets.append(self.runner.import_testset(filepath, target, self))
+        for target in self.__get_targets():
+            self.testsets.append(self.runner.import_testset(filepath, target, self))
 
     def add_testset(self, callback):
-        active_targets = self.runner.get_active_targets()
-        if len(self.targets) == 0:
-            self.__new_testset(callback, self.target)
-        else:
-            targets = self.runner.get_active_targets()
-            if len(self.targets) != 0 and len(targets) == 1 and targets[0] == 'default':
-                targets = self.targets
+        for target in self.__get_targets():
+            self.__new_testset(callback, target)
 
-            for target_name in self.runner.get_active_targets():
+    def __get_targets(self):
+        if len(self.targets) == 0:
+            targets = [self.target]
+        else:
+            target_names = self.runner.get_active_targets()
+            if len(self.targets) != 0 and len(target_names) == 1 and target_names[0] == 'default':
+                target_names = self.targets
+
+            targets = []
+            for target_name in target_names:
                 target = self.targets.get(target_name)
                 if target is not None:
-                    self.__new_testset(callback, target)
+                    targets.append(target)
+
+        return targets
 
     def __new_testset(self, callback, target):
         testset = TestsetImpl(self.runner, target, self, path=self.path)

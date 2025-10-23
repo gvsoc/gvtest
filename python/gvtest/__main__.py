@@ -65,6 +65,7 @@ parser.add_argument("--testset", dest="testset", action="append", default=None, 
 parser.add_argument("--property", dest="properties", action="append", default=[], help="Specifies property")
 parser.add_argument('--py-stack', dest='py_stack', action="store_true", help='Show python exception stack.')
 parser.add_argument('--verbose', dest='verbose', action="store_true", help='Enable verbose mode.')
+parser.add_argument('--dump-all', dest='all', action="store_true", help='Report all tests.')
 parser.add_argument("--target", dest="targets", action="append", help="Specify a target for which the tests must be run")
 parser.add_argument("--threads", dest="threads", default=0, type=int, help="Specify the number of worker threads")
 parser.add_argument("--config", dest="config", default='default', help="Specify config name")
@@ -107,7 +108,7 @@ try:
         max_output_len=args.max_output_len, max_timeout=args.max_timeout, test_list=args.test_list,
         test_skip_list=args.test_skip_list, commands=args.commands, commands_exclude=args.commands_exclude,
         flags=args.flags, bench_csv_file=args.bench_csv_file, bench_regexp=args.bench_regexp, targets=args.targets,
-        platform=args.platform
+        platform=args.platform, report_all=args.all
     )
 
     for testset in args.testset:

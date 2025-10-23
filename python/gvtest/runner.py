@@ -135,16 +135,17 @@ class TestRunStats(object):
         if parent:
             parent.add_stats(self.stats)
 
-    def dump_table(self, table, dump_name):
-        table_dump_row(table,
-            self.run.test.get_full_name() if dump_name else '',
-            self.run.config,
-            self.stats['duration'],
-            self.stats['passed'],
-            self.stats['failed'],
-            self.stats['skipped'],
-            self.stats['excluded']
-        )
+    def dump_table(self, table, dump_name, report_all):
+        if self.stats['failed'] > 0 or report_all:
+            table_dump_row(table,
+                self.run.test.get_full_name() if dump_name else '',
+                self.run.config,
+                self.stats['duration'],
+                self.stats['passed'],
+                self.stats['failed'],
+                self.stats['skipped'],
+                self.stats['excluded']
+            )
 
     def dump_junit(self, test_file):
         if self.run.status != 'excluded':
@@ -201,25 +202,26 @@ class TestStats(object):
         if self.parent:
             self.parent.add_stats(stats)
 
-    def dump_table(self, table):
+    def dump_table(self, table, report_all):
         if len(self.child_runs) == 0:
             return
 
         if len(self.child_runs) == 1:
-            self.child_runs[0].dump_table(table, True)
+            self.child_runs[0].dump_table(table, True, report_all)
         else:
-            table_dump_row(table,
-                self.test.get_full_name(),
-                '',
-                self.stats['duration'],
-                self.stats['passed'],
-                self.stats['failed'],
-                self.stats['skipped'],
-                self.stats['excluded']
-            )
+            if self.stats['failed'] > 0 or report_all:
+                table_dump_row(table,
+                    self.test.get_full_name(),
+                    '',
+                    self.stats['duration'],
+                    self.stats['passed'],
+                    self.stats['failed'],
+                    self.stats['skipped'],
+                    self.stats['excluded']
+                )
 
             for run in self.child_runs:
-                run.dump_table(table, False)
+                run.dump_table(table, False, report_all)
 
     def dump_junit(self, test_file):
         for run in self.child_runs:
@@ -262,7 +264,7 @@ class TestsetStats(object):
         for run in test.runs:
             child_test_stats.add_child_run(run)
 
-    def dump_table(self, table):
+    def dump_table(self, table, report_all):
         is_empty = True
         for stat in self.stats.values():
             if stat != 0:
@@ -271,21 +273,22 @@ class TestsetStats(object):
             return
 
         if self.testset is not None and self.testset.name is not None:
-            table_dump_row(table,
-                self.testset.get_full_name(),
-                '',
-                self.stats['duration'],
-                self.stats['passed'],
-                self.stats['failed'],
-                self.stats['skipped'],
-                self.stats['excluded']
-            )
+            if self.stats['failed'] > 0 or report_all:
+                table_dump_row(table,
+                    self.testset.get_full_name(),
+                    '',
+                    self.stats['duration'],
+                    self.stats['passed'],
+                    self.stats['failed'],
+                    self.stats['skipped'],
+                    self.stats['excluded']
+                )
 
         for child in self.child_tests.values():
-            child.dump_table(table)
+            child.dump_table(table, report_all)
 
         for child in self.child_testsets.values():
-            child.dump_table(table)
+            child.dump_table(table, report_all)
 
     def dump_junit(self, test_file):
         for child in self.child_testsets.values():
@@ -847,7 +850,8 @@ class Runner():
     def __init__(self, config='default', load_average=0.9, nb_threads=0, properties=None,
             stdout=False, safe_stdout=False, max_output_len=-1, max_timeout=-1,
             test_list=None, test_skip_list=None, commands=None, commands_exclude=None,
-            flags=None, bench_csv_file=None, bench_regexp=None, targets=None, platform='gvsoc'):
+            flags=None, bench_csv_file=None, bench_regexp=None, targets=None, platform='gvsoc',
+            report_all=False):
         self.nb_threads = nb_threads
         self.queue = queue.Queue()
         self.testsets = []
@@ -873,6 +877,7 @@ class Runner():
         if self.targets is None:
             self.targets = [ 'default' ]
         self.cpu_poll_interval = 0.1
+        self.report_all = report_all
         for prop in properties:
           name, value = prop.split('=')
           self.properties[name] = value
@@ -1003,7 +1008,7 @@ class Runner():
         x.align = "r"
         x.align["test"] = "l"
         x.align["config"] = "l"
-        self.stats.dump_table(x)
+        self.stats.dump_table(x, self.report_all)
         print()
         print(x)
 

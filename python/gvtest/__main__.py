@@ -27,6 +27,9 @@ from gvtest.runner import Runner
 
 
 
+def tests(runner, args):
+    runner.tests()
+
 def run(runner, args):
     runner.run()
 
@@ -37,6 +40,7 @@ def junit(runner, args):
     runner.dump_junit(args.junit_report_path)
 
 commands = {
+  'tests'  : ['Show the tests', tests],
   'run'    : ['Run the tests', run],
   'table'  : ['Dump a report using a table', table],
   'junit'  : ['Dump junit report', junit],

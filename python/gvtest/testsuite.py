@@ -25,13 +25,50 @@ class Target(object, metaclass=abc.ABCMeta):
     def get_name(self): pass
 
 
+class Command: pass
+
+class Shell(Command):
+
+  def __init__(self, name, cmd, retval=0):
+    self.name = name
+    self.cmd = cmd
+    self.retval = retval
+
+
+class Call(Command):
+
+  def __init__(self, name, callback):
+    self.name = name
+    self.callback = callback
+
+
+class Checker(Command):
+
+  def __init__(self, name, callback, *kargs, **kwargs):
+    self.name = name
+    self.callback = callback, kargs, kwargs
+
+
+class Test(object, metaclass=abc.ABCMeta):
+
+    @abc.abstractmethod
+    def add_bench(self, extract, name, desc): pass
+
+    @abc.abstractmethod
+    def get_path(self): pass
+
+    @abc.abstractmethod
+    def add_command(self, command: Command): pass
+
+
+
 class Testset(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
-    def set_name(self, name): pass
+    def set_name(self, name: str): pass
 
     @abc.abstractmethod
-    def add_target(self, name, config): pass
+    def add_target(self, name: str, config): pass
 
     @abc.abstractmethod
     def get_target(self): pass
@@ -43,27 +80,22 @@ class Testset(object, metaclass=abc.ABCMeta):
     def new_testset(self, testset): pass
 
     @abc.abstractmethod
-    def new_test(self, name): pass
+    def new_test(self, name: str) -> Test: pass
 
     @abc.abstractmethod
-    def new_sdk_test(self, name, flags=None): pass
+    def new_sdk_test(self, name: str, flags: str | None=None): pass
 
     @abc.abstractmethod
     def new_sdk_netlist_power_test(self, name, flags=None): pass
 
     @abc.abstractmethod
-    def get_property(self, name): pass
+    def get_property(self, name: str): pass
 
     @abc.abstractmethod
     def get_platform(self): pass
 
-
-
-class Test(object, metaclass=abc.ABCMeta):
-
     @abc.abstractmethod
-    def add_bench(self, extract, name, desc): pass
-
+    def get_path(self): pass
 
 
 
@@ -71,26 +103,3 @@ class SdkTest(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def add_bench(self, extract, name, desc): pass
-
-
-
-class Shell(object):
-
-  def __init__(self, name, cmd, retval=0):
-    self.name = name
-    self.cmd = cmd
-    self.retval = retval
-
-
-class Call(object):
-
-  def __init__(self, name, callback):
-    self.name = name
-    self.callback = callback
-
-
-class Checker(object):
-
-  def __init__(self, name, callback, *kargs, **kwargs):
-    self.name = name
-    self.callback = callback, kargs, kwargs

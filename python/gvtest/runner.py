@@ -38,6 +38,8 @@ import importlib
 from importlib.machinery import SourceFileLoader
 import json
 import time
+import rich.table
+import rich.tree
 
 
 class bcolors:
@@ -545,14 +547,21 @@ class TestCommon(object):
             self.runs.append(run)
             self.runner.enqueue_test(run)
 
+    def dump_tests(self, table):
+        table.add_row(self.name, self.get_full_name())
+
+    def dump_tests2(self, table, indent, targets):
+        table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
 
     # Can be called to get full name including hierarchy path
     def get_full_name(self):
         return self.full_name
 
+    def get_path(self):
+        return self.full_name.replace(':', '/')
 
 
-class TestImpl(testsuite.Test, TestCommon):
+class TestImpl(TestCommon, testsuite.Test):
 
     def __init__(self, runner, parent, name, target, path):
         TestCommon.__init__(self, runner, parent, name, target, path)
@@ -563,7 +572,7 @@ class TestImpl(testsuite.Test, TestCommon):
         self.benchs.append([extract, name, desc])
 
 
-class MakeTestImpl(testsuite.Test, TestCommon):
+class MakeTestImpl(TestCommon, testsuite.Test):
 
     def __init__(self, runner, parent, name, target, path, flags, checker=None, retval=0):
         TestCommon.__init__(self, runner, parent, name, target, path)
@@ -579,7 +588,12 @@ class MakeTestImpl(testsuite.Test, TestCommon):
         if platform is not None:
             self.flags += ' platform=%s' % platform
 
-        self.flags += f' build={path}/build/{runner.get_config()}/{self.name}'
+        workdir = os.environ.get('GVSOC_WORKDIR')
+        if workdir is None:
+            builddir = f'{path}/build/{runner.get_config()}/{self.name}'
+        else:
+            builddir = f'{workdir}/tests/{self.get_path()}'
+        self.flags += f' build={builddir}'
 
         self.add_command(testsuite.Shell('clean', 'make clean %s' % (self.flags)))
         self.add_command(testsuite.Shell('build', 'make build %s' % (self.flags)))
@@ -590,7 +604,6 @@ class MakeTestImpl(testsuite.Test, TestCommon):
 
     def add_bench(self, extract, name, desc):
         self.benchs.append([extract, name, desc])
-
 
 class GvrunTestImpl(testsuite.SdkTest, TestCommon):
 
@@ -609,7 +622,13 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
             self.flags += ' --platform=%s' % platform
 
         target = target.get_name()
-        self.flags += f' --build-dir=build/{target}/{self.name}'
+
+        workdir = os.environ.get('GVSOC_WORKDIR')
+        if workdir is None:
+            builddir = f'build/{target}/{self.name}'
+        else:
+            builddir = f'{workdir}/tests/{self.get_path()}'
+        self.flags += f' --build-dir={builddir}'
 
         cmd = f'gvrun --target {target} {self.flags}'
         self.add_command(testsuite.Shell('clean', f'{cmd} clean'))
@@ -744,6 +763,41 @@ class TestsetImpl(testsuite.Testset):
 
         return testset
 
+    def dump_tests(self, tree):
+
+        if self.name is not None:
+            new_tree = rich.tree.Tree(self.name)
+            tree.add(new_tree)
+            tree = new_tree
+
+        for testset in self.testsets:
+            testset.dump_tests(tree)
+
+        if len(self.tests) > 0:
+            table = rich.table.Table(title=f'{self.name}', title_justify="left")
+            table.add_column('Name')
+            table.add_column('Path')
+            for test in self.tests:
+                test.dump_tests(table)
+
+            tree.add(table)
+
+    def dump_tests2(self, table, indent='', parent_targets=[]):
+
+        targets = list(self.targets.keys())
+        targets += parent_targets
+
+        if self.name is not None:
+            table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
+            indent += '  '
+
+        for testset in self.testsets:
+            testset.dump_tests2(table, indent, targets)
+
+        if len(self.tests) > 0:
+            for test in self.tests:
+                test.dump_tests2(table, indent, targets)
+
 
     def enqueue(self):
 
@@ -871,6 +925,26 @@ class Runner():
 
         return False
 
+    def tests2(self):
+        tree = rich.tree.Tree('tests')
+
+        for testset in self.testsets:
+            testset.dump_tests(tree)
+
+        print()
+        rich.print(tree)
+
+    def tests(self):
+        table = rich.table.Table(title=f'tests', title_justify="left")
+        table.add_column('Name')
+        table.add_column('Path')
+        table.add_column('Targets')
+
+        for testset in self.testsets:
+            testset.dump_tests2(table)
+
+        print()
+        rich.print(table)
 
     def run(self):
         self.event.clear()

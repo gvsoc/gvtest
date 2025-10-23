@@ -40,7 +40,12 @@ import json
 import time
 import rich.table
 import rich.tree
-
+from rich.console import Console, Group
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+from rich.progress import Progress, BarColumn, TextColumn, TaskProgressColumn
+from rich.align import Align
 
 class bcolors:
     HEADER = '\033[95m'
@@ -918,6 +923,50 @@ class Runner():
 
         print()
         rich.print(table)
+
+    def summary(self):
+        failed = self.stats.stats['failed']
+        passed = self.stats.stats['passed']
+        skipped = self.stats.stats['skipped']
+        excluded = self.stats.stats['excluded']
+        total = failed + passed
+
+        console = Console()
+        table = Table(show_header=False)
+        table.add_column("Status", justify="center")
+        table.add_column("Count", justify="right")
+        table.add_row("Test Summary", "", style="bold", end_section=True)
+        table.add_row("Total", str(total))
+        table.add_row("Passed", str(passed))
+        table.add_row("Failed", str(failed))
+        table.add_row("Skipped", str(skipped))
+        table.add_row("Excluded", str(excluded))
+
+        console.print(table)
+
+        success_ratio = passed / total if total > 0 else 0
+        percent = int(success_ratio * 100)
+
+        if passed == total:
+            msg = "[bold green]All tests passed[/bold green]"
+        else:
+            msg = f"[bold red]{passed}/{total} tests passed ({percent}%).[/bold red]"
+
+        final_bar = Progress(
+            BarColumn(bar_width=len(msg))
+        )
+
+        task = final_bar.add_task("", total=100, completed=percent)
+
+        if passed == total:
+            content = msg
+        else:
+            content = Group(
+                Align.center(msg, vertical="middle"),
+                Align.center(final_bar, vertical="middle")
+            )
+
+        console.print(Panel.fit(content, border_style="green" if passed == total else "red", padding=(1,2)))
 
     def run(self):
         self.event.clear()

@@ -547,10 +547,7 @@ class TestCommon(object):
             self.runs.append(run)
             self.runner.enqueue_test(run)
 
-    def dump_tests(self, table):
-        table.add_row(self.name, self.get_full_name())
-
-    def dump_tests2(self, table, indent, targets):
+    def dump_tests(self, table, indent, targets):
         table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
 
     # Can be called to get full name including hierarchy path
@@ -627,7 +624,7 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
         if workdir is None:
             builddir = f'build/{target}/{self.name}'
         else:
-            builddir = f'{workdir}/tests/{self.get_path()}'
+            builddir = f'{workdir}/tests/{self.get_path()}/{target}'
         self.flags += f' --build-dir={builddir}'
 
         cmd = f'gvrun --target {target} {self.flags}'
@@ -732,19 +729,27 @@ class TestsetImpl(testsuite.Testset):
         if self.path is not None:
             filepath = os.path.join(self.path, file)
 
-        if len(self.targets) == 0 or len(active_targets) == 1 and active_targets[0] == 'default':
+        if len(self.targets) == 0:
             self.testsets.append(self.runner.import_testset(filepath, self.target, self))
         else:
-            for target_name in active_targets:
+            targets = active_targets
+            if len(self.targets) != 0 and len(targets) == 1 and targets[0] == 'default':
+                targets = self.targets
+
+            for target_name in targets:
                 target = self.targets.get(target_name)
                 if target is not None:
                     self.testsets.append(self.runner.import_testset(filepath, target, self))
 
     def add_testset(self, callback):
         active_targets = self.runner.get_active_targets()
-        if len(self.targets) == 0 or len(active_targets) == 1 and active_targets[0] == 'default':
+        if len(self.targets) == 0:
             self.__new_testset(callback, self.target)
         else:
+            targets = self.runner.get_active_targets()
+            if len(self.targets) != 0 and len(targets) == 1 and targets[0] == 'default':
+                targets = self.targets
+
             for target_name in self.runner.get_active_targets():
                 target = self.targets.get(target_name)
                 if target is not None:
@@ -763,26 +768,7 @@ class TestsetImpl(testsuite.Testset):
 
         return testset
 
-    def dump_tests(self, tree):
-
-        if self.name is not None:
-            new_tree = rich.tree.Tree(self.name)
-            tree.add(new_tree)
-            tree = new_tree
-
-        for testset in self.testsets:
-            testset.dump_tests(tree)
-
-        if len(self.tests) > 0:
-            table = rich.table.Table(title=f'{self.name}', title_justify="left")
-            table.add_column('Name')
-            table.add_column('Path')
-            for test in self.tests:
-                test.dump_tests(table)
-
-            tree.add(table)
-
-    def dump_tests2(self, table, indent='', parent_targets=[]):
+    def dump_tests(self, table, indent='', parent_targets=[]):
 
         targets = list(self.targets.keys())
         targets += parent_targets
@@ -792,11 +778,11 @@ class TestsetImpl(testsuite.Testset):
             indent += '  '
 
         for testset in self.testsets:
-            testset.dump_tests2(table, indent, targets)
+            testset.dump_tests(table, indent, targets)
 
         if len(self.tests) > 0:
             for test in self.tests:
-                test.dump_tests2(table, indent, targets)
+                test.dump_tests(table, indent, targets)
 
 
     def enqueue(self):
@@ -925,15 +911,6 @@ class Runner():
 
         return False
 
-    def tests2(self):
-        tree = rich.tree.Tree('tests')
-
-        for testset in self.testsets:
-            testset.dump_tests(tree)
-
-        print()
-        rich.print(tree)
-
     def tests(self):
         table = rich.table.Table(title=f'tests', title_justify="left")
         table.add_column('Name')
@@ -941,7 +918,7 @@ class Runner():
         table.add_column('Targets')
 
         for testset in self.testsets:
-            testset.dump_tests2(table)
+            testset.dump_tests(table)
 
         print()
         rich.print(table)

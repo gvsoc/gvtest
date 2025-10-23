@@ -27,6 +27,9 @@ from gvtest.runner import Runner
 
 
 
+def summary(runner, args):
+    runner.summary()
+
 def tests(runner, args):
     runner.tests()
 
@@ -43,6 +46,7 @@ commands = {
   'tests'  : ['Show the tests', tests],
   'run'    : ['Run the tests', run],
   'table'  : ['Dump a report using a table', table],
+  'summary' : ['Dump summary', summary],
   'junit'  : ['Dump junit report', junit],
 }
 
@@ -89,6 +93,7 @@ if args.verbose:
 if len(args.command) == 0:
   args.command.append('run')
   args.command.append('table')
+  args.command.append('summary')
 
 if args.testset is None:
   args.testset = [os.getcwd() + '/testset.cfg']

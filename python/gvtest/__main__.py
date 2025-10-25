@@ -42,12 +42,19 @@ def table(runner, args):
 def junit(runner, args):
     runner.dump_junit(args.junit_report_path)
 
+def all(runner, args):
+    run(runner, args)
+    table(runner, args)
+    summary(runner, args)
+    junit(runner, args)
+
 commands = {
   'tests'  : ['Show the tests', tests],
   'run'    : ['Run the tests', run],
   'table'  : ['Dump a report using a table', table],
   'summary' : ['Dump summary', summary],
   'junit'  : ['Dump junit report', junit],
+  'all'  : ['Execute commands run table summary junit', all],
 }
 
 commandHelp = """Available commands:

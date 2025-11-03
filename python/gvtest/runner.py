@@ -633,7 +633,7 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
             builddir = f'build/{target}/{self.name}'
         else:
             builddir = f'{workdir}/tests/{self.get_path()}/{target}'
-        self.flags += f' --build-dir={builddir}'
+        self.flags += f' --work-dir={builddir}'
 
         cmd = f'gvrun --target {target} {self.flags}'
         self.add_command(testsuite.Shell('clean', f'{cmd} clean'))

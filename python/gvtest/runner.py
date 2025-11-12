@@ -111,6 +111,23 @@ class Target(object):
 
         return None
 
+    def get_envvars(self):
+        envvars = self.config.get('envvars')
+
+        if envvars is not None:
+            result = {}
+            for key, value in envvars.items():
+                try:
+                    eval_value = eval(value)
+                    if eval_value is None:
+                        eval_value = ""
+                    result[key] = eval_value
+                except:
+                    result[key] = ""
+            return result
+
+        return None
+
     def format_properties(self, str):
         properties = self.config.get('properties')
         if properties is None:
@@ -330,9 +347,11 @@ class TestRun(object):
             self.config = self.runner.config
 
         self.sourceme = None
+        self.envvars = None
 
         if self.target is not None:
             self.sourceme = self.target.get_sourceme()
+            self.envvars = self.target.get_envvars()
 
     def get_target_name(self):
         if self.target is None:
@@ -363,7 +382,7 @@ class TestRun(object):
 
         for command in self.test.commands:
 
-            retval = self.__exec_command(command, self.target, self.sourceme)
+            retval = self.__exec_command(command, self.target, self.sourceme, self.envvars)
 
             if retval != 0 or self.timeout_reached:
                 if self.timeout_reached:
@@ -440,13 +459,18 @@ class TestRun(object):
         print (test_result_str + bcolors.BOLD + testname + bcolors.ENDC + ' %s' % (config))
         sys.stdout.flush()
 
-    def __exec_process(self, command):
+    def __exec_process(self, command, envvars=None):
         self.lock.acquire()
         if self.timeout_reached:
             return ['', -1]
 
+        env = os.environ.copy()
+
+        if envvars is not None:
+            env.update(envvars)
+
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True,
-            cwd=self.test.path)
+            cwd=self.test.path, env=env)
 
         self.current_proc = proc
 
@@ -468,7 +492,7 @@ class TestRun(object):
 
 
     # Called by run method to execute specific command
-    def __exec_command(self, command, target, sourceme):
+    def __exec_command(self, command, target, sourceme, envvars):
 
         if type(command) == testsuite.Shell:
             cmd = command.cmd
@@ -480,7 +504,7 @@ class TestRun(object):
             if sourceme is not None:
                 cmd = f'gvtest_cmd_stub {sourceme} {cmd}'
 
-            retval = 0 if self.__exec_process(cmd) == command.retval else 1
+            retval = 0 if self.__exec_process(cmd, envvars) == command.retval else 1
 
         elif type(command) == testsuite.Checker:
             self.__dump_test_msg(f'--- Checker command ---\n')
@@ -811,8 +835,9 @@ class TestsetImpl(testsuite.Testset):
             self.tests.append(test)
         return test
 
-    def new_make_test(self, name, flags='', checker=None, retval=0):
-        test = MakeTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
+    def new_make_test(self, name, flags='', checker=None, retval=0, path=None):
+        test = MakeTestImpl(self.runner, self, name, self.target, self.path if path is None else path, flags, checker=checker,
+            retval=retval)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test

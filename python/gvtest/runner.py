@@ -16,6 +16,7 @@
 # limitations under the License.
 #
 
+import traceback
 import os
 import logging
 import gvtest.testsuite as testsuite
@@ -508,10 +509,13 @@ class TestRun(object):
 
         elif type(command) == testsuite.Checker:
             self.__dump_test_msg(f'--- Checker command ---\n')
-            result = command.callback[0](self, self.output, *command.callback[1], **command.callback[2])
+            try:
+                result = command.callback[0](self, self.output, *command.callback[1], **command.callback[2])
+            except:
+                result = (False, "Got exception: " + traceback.format_exc())
+
             if result[1] is not None:
                 self.__dump_test_msg(result[1])
-
             retval = 0 if result[0] else -1
 
         elif type(command) == testsuite.Call:

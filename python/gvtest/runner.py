@@ -540,6 +540,7 @@ class TestCommon(object):
         self.path = path
         self.status = None
         self.skipped = None
+        self.description = None
         if self.path == '':
             self.path = os.getcwd()
         self.current_proc = None
@@ -592,6 +593,9 @@ class TestCommon(object):
 
     def get_path(self):
         return self.full_name.replace(':', '/')
+
+    def add_description(self, description):
+        self.description = description
 
 
 class TestImpl(TestCommon, testsuite.Test):

@@ -905,10 +905,12 @@ class Runner():
         self.properties = {}
         self.test_list = test_list
         self.targets = targets
-        self.default_target = Target('default')
         self.platform = platform
         if self.targets is None:
             self.targets = [ 'default' ]
+            self.default_target = Target('default')
+        else:
+            self.default_target = Target(self.targets[0])
         self.cpu_poll_interval = 0.1
         self.report_all = report_all
         for prop in properties:

@@ -1,2 +1,4 @@
 psutil
 prettytable
+pyyaml
+rich

@@ -47,6 +47,7 @@ from rich.panel import Panel
 from rich import box
 from rich.progress import Progress, BarColumn, TextColumn, TaskProgressColumn
 from rich.align import Align
+from gvtest.config import get_python_paths_for_dir
 
 class bcolors:
     HEADER = '\033[95m'
@@ -1082,15 +1083,37 @@ class Runner():
     def import_testset(self, file, target, parent=None):
         logging.debug(f"Parsing file (path: {file})")
 
+        # Get the directory of the testset file
+        testset_dir = os.path.dirname(file)
+        
+        # Discover and load gvtest.yaml configs for this testset's directory hierarchy
+        # This will find all gvtest.yaml files from testset_dir up to filesystem root
+        python_paths = get_python_paths_for_dir(testset_dir)
+        
+        # Save the current sys.path to restore it later
+        # This ensures complete isolation between testsets
+        saved_sys_path = sys.path.copy()
+        
         try:
+            # Add the discovered paths to sys.path
+            # This allows the testset to import from configured paths during loading
+            for path in python_paths:
+                if path not in sys.path:
+                    sys.path.insert(0, path)
+                    logging.debug(f"Added to sys.path for testset: {path}")
+            
             spec = importlib.util.spec_from_loader("module.name", SourceFileLoader("module.name", file))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except FileNotFoundError as exc:
             raise RuntimeError(bcolors.FAIL + 'Unable to open test configuration file: ' + file + bcolors.ENDC)
+        finally:
+            # Restore original sys.path to maintain isolation between testsets
+            # Imported modules remain available via sys.modules cache
+            sys.path = saved_sys_path
+            logging.debug(f"Restored sys.path after loading testset")
 
         testset = TestsetImpl(self, target, parent, path=os.path.dirname(file))
-
         module.testset_build(testset)
 
         return testset

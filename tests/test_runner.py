@@ -878,3 +878,154 @@ def testset_build(testset):
         run_b = r.testsets[1].tests[0].runs[0]
         assert 'from_a' in run_a.output
         assert 'from_b' in run_b.output
+
+
+# ---------------------------------------------------------------------------
+# Max output length
+# ---------------------------------------------------------------------------
+
+class TestMaxOutputLen:
+    """Tests for --max-output-len enforcement."""
+
+    def _run_testset(self, tmp_path, testset_content, **runner_kwargs):
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text(testset_content)
+        defaults = {'properties': [], 'flags': [], 'nb_threads': 1}
+        defaults.update(runner_kwargs)
+        r = Runner(**defaults)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        return r
+
+    def test_output_truncated(self, tmp_path):
+        """Output beyond max_output_len should be truncated."""
+        r = self._run_testset(tmp_path, '''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('trunc')
+    test = testset.new_test('big_output')
+    test.add_command(Shell('run', 'seq 1 10000'))
+''', max_output_len=200)
+        run = r.testsets[0].tests[0].runs[0]
+        # Output should contain truncation notice
+        assert 'truncated' in run.output.lower() or 'Truncated' in run.output
+
+    def test_no_truncation_by_default(self, tmp_path):
+        """Without max_output_len, output is not truncated."""
+        r = self._run_testset(tmp_path, '''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('notrunc')
+    test = testset.new_test('output')
+    test.add_command(Shell('run', 'seq 1 100'))
+''')
+        run = r.testsets[0].tests[0].runs[0]
+        assert 'truncated' not in run.output.lower()
+        assert '100' in run.output
+
+
+# ---------------------------------------------------------------------------
+# Command filtering (--cmd / --cmd-exclude)
+# ---------------------------------------------------------------------------
+
+class TestCommandFiltering:
+    """Tests for --cmd and --cmd-exclude options."""
+
+    def _run_testset(self, tmp_path, testset_content, **runner_kwargs):
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text(testset_content)
+        defaults = {'properties': [], 'flags': [], 'nb_threads': 1}
+        defaults.update(runner_kwargs)
+        r = Runner(**defaults)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        return r
+
+    def test_cmd_filter_runs_only_selected(self, tmp_path):
+        """--cmd should run only the named commands."""
+        marker = tmp_path / 'step2_ran.txt'
+        r = self._run_testset(tmp_path, f'''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('cmdfilter')
+    test = testset.new_test('test')
+    test.add_command(Shell('step1', 'echo step1'))
+    test.add_command(Shell('step2', 'touch {marker}'))
+''', commands=['step1'])
+        # step2 should NOT have run
+        assert not marker.exists()
+
+    def test_cmd_exclude_skips_command(self, tmp_path):
+        """--cmd-exclude should skip the named commands."""
+        marker = tmp_path / 'clean_ran.txt'
+        r = self._run_testset(tmp_path, f'''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('cmdexclude')
+    test = testset.new_test('test')
+    test.add_command(Shell('clean', 'touch {marker}'))
+    test.add_command(Shell('run', 'echo ok'))
+''', commands_exclude=['clean'])
+        # clean should NOT have run
+        assert not marker.exists()
+        assert r.stats.stats['passed'] == 1
+
+    def test_no_cmd_filter_runs_all(self, tmp_path):
+        """Without --cmd/--cmd-exclude, all commands run."""
+        marker = tmp_path / 'all_ran.txt'
+        r = self._run_testset(tmp_path, f'''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('allcmds')
+    test = testset.new_test('test')
+    test.add_command(Shell('step1', 'echo ok'))
+    test.add_command(Shell('step2', 'touch {marker}'))
+''')
+        assert marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# Graceful interrupt
+# ---------------------------------------------------------------------------
+
+class TestGracefulInterrupt:
+    """Tests for signal handling."""
+
+    def test_interrupted_flag_clears_pending(self, tmp_path):
+        """Setting _interrupted should prevent pending tests from being dispatched."""
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('int')
+    for i in range(5):
+        test = testset.new_test(f'test_{i}')
+        test.add_command(Shell('run', 'sleep 10'))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        
+        # Mark as interrupted before running — check_pending_tests should exit early
+        r._interrupted = True
+        
+        # Enqueue tests
+        for testset in r.testsets:
+            testset.enqueue()
+        
+        # Check that pending tests get cleared
+        r.check_pending_tests()
+        r.stop()
+        
+        # All pending tests should have been dropped
+        assert len(r.pending_tests) == 0
+        assert r.nb_pending_tests == 0

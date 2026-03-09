@@ -28,6 +28,8 @@ This module was split from a monolithic runner.py. The other pieces now live in:
   - config.py       — Hierarchical gvtest.yaml config loader
 """
 
+from __future__ import annotations
+
 import os
 import logging
 import signal
@@ -38,6 +40,8 @@ import threading
 import time
 import importlib
 from importlib.machinery import SourceFileLoader
+from types import FrameType
+from typing import Any
 
 import psutil
 import rich.table
@@ -65,14 +69,14 @@ from gvtest.reporting import table_dump_row
 
 class Worker(threading.Thread):
 
-    def __init__(self, runner):
+    def __init__(self, runner: Runner) -> None:
         super().__init__(daemon=True)
 
-        self.runner = runner
+        self.runner: Runner = runner
 
-    def run(self):
+    def run(self) -> None:
         while True:
-            test = self.runner.pop_test()
+            test: TestRun | None = self.runner.pop_test()
             if test is None:
                 return
             test.run()
@@ -80,45 +84,45 @@ class Worker(threading.Thread):
 
 class Runner():
 
-    def __init__(self, config='default', load_average=0.9, nb_threads=0, properties=None,
-            stdout=False, safe_stdout=False, max_output_len=-1, max_timeout=-1,
-            test_list=None, test_skip_list=None, commands=None, commands_exclude=None,
-            flags=None, bench_csv_file=None, bench_regexp=None, targets=None, platform='gvsoc',
-            report_all=False):
-        self.nb_threads = nb_threads
-        self.queue = queue.Queue()
-        self.testsets = []
-        self.pending_tests = []
-        self.max_testname_len = 0
-        self.config = config
-        self.event = threading.Event()
-        self.lock = threading.Lock()
-        self.load_average = load_average
-        self.stdout = stdout
-        self.safe_stdout = safe_stdout
-        self.nb_pending_tests = 0
-        self.test_skip_list = test_skip_list
-        self.max_timeout = max_timeout
-        self.max_output_len = max_output_len
-        self.commands_filter = commands
-        self.commands_exclude = commands_exclude
-        self.flags = flags
-        self.bench_results = {}
-        self.bench_csv_file = bench_csv_file
-        self.properties = {}
-        self.test_list = test_list
-        self.targets = targets
-        self.platform = platform
-        if self.targets is None:
-            self.targets = [ 'default' ]
-            self.default_target = Target('default')
+    def __init__(self, config: str = 'default', load_average: float = 0.9, nb_threads: int = 0, properties: list[str] | None = None,
+            stdout: bool = False, safe_stdout: bool = False, max_output_len: int = -1, max_timeout: int = -1,
+            test_list: list[str] | None = None, test_skip_list: list[str] | None = None, commands: list[str] | None = None, commands_exclude: list[str] | None = None,
+            flags: list[str] | None = None, bench_csv_file: str | None = None, bench_regexp: str | None = None, targets: list[str] | None = None, platform: str = 'gvsoc',
+            report_all: bool = False) -> None:
+        self.nb_threads: int = nb_threads
+        self.queue: queue.Queue[TestRun | None] = queue.Queue()
+        self.testsets: list[TestsetImpl] = []
+        self.pending_tests: list[TestRun] = []
+        self.max_testname_len: int = 0
+        self.config: str = config
+        self.event: threading.Event = threading.Event()
+        self.lock: threading.Lock = threading.Lock()
+        self.load_average: float = load_average
+        self.stdout: bool = stdout
+        self.safe_stdout: bool = safe_stdout
+        self.nb_pending_tests: int = 0
+        self.test_skip_list: list[str] | None = test_skip_list
+        self.max_timeout: int = max_timeout
+        self.max_output_len: int = max_output_len
+        self.commands_filter: list[str] | None = commands
+        self.commands_exclude: list[str] | None = commands_exclude
+        self.flags: list[str] = flags if flags is not None else []
+        self.bench_results: dict[str, list[Any]] = {}
+        self.bench_csv_file: str | None = bench_csv_file
+        self.properties: dict[str, str] = {}
+        self.test_list: list[str] | None = test_list
+        self.targets: list[str] = targets if targets is not None else ['default']
+        self.platform: str = platform
+        if targets is None:
+            self.default_target: Target = Target('default')
         else:
             self.default_target = Target(self.targets[0])
-        self.cpu_poll_interval = 0.1
-        self.report_all = report_all
-        for prop in properties:
-          name, value = prop.split('=')
-          self.properties[name] = value
+        self.cpu_poll_interval: float = 0.1
+        self.report_all: bool = report_all
+        if properties is not None:
+            for prop in properties:
+              name, value = prop.split('=')
+              self.properties[name] = value
 
 
         if bench_csv_file is not None:
@@ -128,16 +132,16 @@ class Runner():
                     for row in csv_reader:
                         self.bench_results[row[0]] = row[1:]
 
-    def get_active_targets(self):
+    def get_active_targets(self) -> list[str]:
         return self.targets
 
-    def get_platform(self):
+    def get_platform(self) -> str:
         return self.platform
 
-    def get_property(self, name):
+    def get_property(self, name: str) -> str | None:
         return self.properties.get(name)
 
-    def is_selected(self, test):
+    def is_selected(self, test: TestCommon) -> bool:
         if self.test_list is None:
             return True
 
@@ -147,7 +151,7 @@ class Runner():
 
         return False
 
-    def is_skipped(self, name):
+    def is_skipped(self, name: str) -> bool:
         if self.test_skip_list is not None:
             for skip in self.test_skip_list:
                 if name.find(skip) == 0:
@@ -155,7 +159,7 @@ class Runner():
 
         return False
 
-    def tests(self):
+    def tests(self) -> None:
         table = rich.table.Table(title=f'tests', title_justify="left")
         table.add_column('Name')
         table.add_column('Path')
@@ -167,12 +171,12 @@ class Runner():
         print()
         rich.print(table)
 
-    def summary(self):
-        failed = self.stats.stats['failed']
-        passed = self.stats.stats['passed']
-        skipped = self.stats.stats['skipped']
-        excluded = self.stats.stats['excluded']
-        total = failed + passed
+    def summary(self) -> None:
+        failed: int | float = self.stats.stats['failed']
+        passed: int | float = self.stats.stats['passed']
+        skipped: int | float = self.stats.stats['skipped']
+        excluded: int | float = self.stats.stats['excluded']
+        total: int | float = failed + passed
 
         console = Console()
         table = Table(show_header=False)
@@ -187,11 +191,11 @@ class Runner():
 
         console.print(table)
 
-        success_ratio = passed / total if total > 0 else 0
-        percent = int(success_ratio * 100)
+        success_ratio: float = passed / total if total > 0 else 0
+        percent: int = int(success_ratio * 100)
 
         if passed == total:
-            msg = "[bold green]All tests passed[/bold green]"
+            msg: str = "[bold green]All tests passed[/bold green]"
         else:
             msg = f"[bold red]{passed}/{total} tests passed ({percent}%).[/bold red]"
 
@@ -202,7 +206,7 @@ class Runner():
         task = final_bar.add_task("", total=100, completed=percent)
 
         if passed == total:
-            content = msg
+            content: Any = msg
         else:
             content = Group(
                 Align.center(msg, vertical="middle"),
@@ -211,7 +215,7 @@ class Runner():
 
         console.print(Panel.fit(content, border_style="green" if passed == total else "red", padding=(1,2)))
 
-    def run(self):
+    def run(self) -> None:
         self.event.clear()
 
         for testset in self.testsets:
@@ -223,12 +227,12 @@ class Runner():
 
             # Only wait if there are still tests running
             self.lock.acquire()
-            should_wait = self.nb_pending_tests > 0
+            should_wait: bool = self.nb_pending_tests > 0
             self.lock.release()
             if should_wait:
                 self.event.wait()
 
-        self.stats = TestsetStats()
+        self.stats: TestsetStats = TestsetStats()
         for testset in self.testsets:
             self.stats.add_child_testset(testset)
 
@@ -240,13 +244,13 @@ class Runner():
 
 
 
-    def declare_name(self, name):
-        name_len = len(name)
+    def declare_name(self, name: str) -> None:
+        name_len: int = len(name)
         if self.max_testname_len < name_len:
             self.max_testname_len = name_len
 
 
-    def dump_table(self):
+    def dump_table(self) -> None:
         console = Console()
         table = Table(show_header=True, header_style="bold")
         table.add_column("test", justify="left", no_wrap=True)
@@ -261,31 +265,31 @@ class Runner():
         console.print(table)
 
 
-    def dump_junit(self, report_path):
+    def dump_junit(self, report_path: str) -> None:
         os.makedirs(report_path, exist_ok=True)
 
         self.stats.dump_junit_files(report_path)
 
 
 
-    def get_config(self):
+    def get_config(self) -> str:
         return self.config
 
-    def pop_test(self):
+    def pop_test(self) -> TestRun | None:
         return self.queue.get()
 
-    def start(self):
+    def start(self) -> None:
         if self.nb_threads == 0:
             self.nb_threads = psutil.cpu_count(logical=True)
 
-        self._interrupted = False
-        self._orig_sigint = signal.getsignal(signal.SIGINT)
+        self._interrupted: bool = False
+        self._orig_sigint: Any = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_interrupt)
 
         for thread_id in range(0, self.nb_threads):
             Worker(self).start()
 
-    def _handle_interrupt(self, signum, frame):
+    def _handle_interrupt(self, signum: int, frame: FrameType | None) -> None:
         """Graceful Ctrl+C: drain pending tests and signal workers to stop."""
         if self._interrupted:
             # Second Ctrl+C: force exit
@@ -296,7 +300,7 @@ class Runner():
         sys.stdout.flush()
         # Clear pending tests so no new ones get queued
         self.lock.acquire()
-        dropped = len(self.pending_tests)
+        dropped: int = len(self.pending_tests)
         self.pending_tests.clear()
         self.nb_pending_tests -= dropped
         if self.nb_pending_tests <= 0:
@@ -304,7 +308,7 @@ class Runner():
             self.event.set()
         self.lock.release()
 
-    def stop(self):
+    def stop(self) -> None:
         for thread_id in range(0, self.nb_threads):
             self.queue.put(None)
         # Restore original signal handler
@@ -312,25 +316,25 @@ class Runner():
             signal.signal(signal.SIGINT, self._orig_sigint)
             self._orig_sigint = None
 
-    def add_testset(self, file):
+    def add_testset(self, file: str) -> None:
         if not os.path.isabs(file):
             file = os.path.join(os.getcwd(), file)
         self.testsets.append(self.import_testset(file, self.default_target))
 
 
-    def import_testset(self, file, target, parent=None):
+    def import_testset(self, file: str, target: Target, parent: TestsetImpl | None = None) -> TestsetImpl:
         logging.debug(f"Parsing file (path: {file})")
 
         # Get the directory of the testset file
-        testset_dir = os.path.dirname(file)
+        testset_dir: str = os.path.dirname(file)
         
         # Discover and load gvtest.yaml configs for this testset's directory hierarchy
         # This will find all gvtest.yaml files from testset_dir up to filesystem root
-        python_paths = get_python_paths_for_dir(testset_dir)
+        python_paths: list[str] = get_python_paths_for_dir(testset_dir)
         
         # Save the current sys.path to restore it later
         # This ensures complete isolation between testsets
-        saved_sys_path = sys.path.copy()
+        saved_sys_path: list[str] = sys.path.copy()
         
         try:
             # Add the discovered paths to sys.path
@@ -341,14 +345,14 @@ class Runner():
                     logging.debug(f"Added to sys.path for testset: {path}")
             
             # Use a unique module name per file to avoid collisions in sys.modules
-            module_name = f"gvtest_testset_{hash(file)}"
+            module_name: str = f"gvtest_testset_{hash(file)}"
             spec = importlib.util.spec_from_loader(module_name, SourceFileLoader(module_name, file))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
             # testset_build() must run while python_paths are still in sys.path,
             # since it may import modules from configured paths
-            testset = TestsetImpl(self, target, parent, path=os.path.dirname(file))
+            testset: TestsetImpl = TestsetImpl(self, target, parent, path=os.path.dirname(file))
             module.testset_build(testset)
         except FileNotFoundError as exc:
             raise RuntimeError('Unable to open test configuration file: ' + file)
@@ -361,7 +365,7 @@ class Runner():
         return testset
 
 
-    def enqueue_test(self, test):
+    def enqueue_test(self, test: TestRun) -> None:
         self.lock.acquire()
         self.nb_pending_tests += 1
         self.pending_tests.append(test)
@@ -369,7 +373,7 @@ class Runner():
 
 
 
-    def check_pending_tests(self):
+    def check_pending_tests(self) -> None:
         while True:
             self.lock.acquire()
             if len(self.pending_tests) == 0:
@@ -378,7 +382,7 @@ class Runner():
 
             if self._interrupted:
                 # Drop all remaining pending tests
-                dropped = len(self.pending_tests)
+                dropped: int = len(self.pending_tests)
                 self.pending_tests.clear()
                 self.nb_pending_tests -= dropped
                 if self.nb_pending_tests <= 0:
@@ -387,7 +391,7 @@ class Runner():
                 self.lock.release()
                 break
 
-            test = self.pending_tests.pop()
+            test: TestRun = self.pending_tests.pop()
             self.lock.release()
 
             while not self.check_cpu_load():
@@ -396,20 +400,20 @@ class Runner():
             self.queue.put(test)
 
 
-    def check_cpu_load(self):
+    def check_cpu_load(self) -> bool:
         if self.load_average == 1.0:
             return True
 
-        load = psutil.cpu_percent(interval=self.cpu_poll_interval)
+        load: float = psutil.cpu_percent(interval=self.cpu_poll_interval)
 
         return load < self.load_average * 100
 
 
-    def get_max_testname_len(self):
+    def get_max_testname_len(self) -> int:
         return self.max_testname_len
 
 
-    def terminate(self, test):
+    def terminate(self, test: TestRun) -> None:
         self.lock.acquire()
         self.nb_pending_tests -= 1
 
@@ -418,5 +422,5 @@ class Runner():
 
         self.lock.release()
 
-    def register_bench_result(self, name, value, desc):
+    def register_bench_result(self, name: str, value: float, desc: str) -> None:
         self.bench_results[name] = [value, desc]

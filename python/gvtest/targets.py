@@ -20,22 +20,25 @@
 Target configuration — platform targets with properties, env vars, and sourceme scripts.
 """
 
+from __future__ import annotations
+
 import ast
 import json
+from typing import Any, Optional
 
 
 class Target(object):
 
-    def __init__(self, name, config=None):
-        self.name = name
+    def __init__(self, name: str, config: str | None = None) -> None:
+        self.name: str = name
         if config is None:
             config = '{}'
-        self.config = json.loads(config)
+        self.config: dict[str, Any] = json.loads(config)
 
-    def get_name(self):
+    def get_name(self) -> str:
         return self.name
 
-    def get_sourceme(self):
+    def get_sourceme(self) -> str | None:
         sourceme = self.config.get('sourceme')
 
         if sourceme is not None:
@@ -43,11 +46,11 @@ class Target(object):
 
         return None
 
-    def get_envvars(self):
+    def get_envvars(self) -> dict[str, str] | None:
         envvars = self.config.get('envvars')
 
         if envvars is not None:
-            result = {}
+            result: dict[str, str] = {}
             for key, value in envvars.items():
                 try:
                     eval_value = ast.literal_eval(value)
@@ -60,13 +63,13 @@ class Target(object):
 
         return None
 
-    def format_properties(self, str):
+    def format_properties(self, str: str) -> str:
         properties = self.config.get('properties')
         if properties is None:
             return str
         return str.format(**properties)
 
-    def get_property(self, name):
+    def get_property(self, name: str) -> Any | None:
         properties = self.config.get('properties')
         if properties is None:
             return None

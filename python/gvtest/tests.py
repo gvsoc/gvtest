@@ -20,6 +20,8 @@
 Test execution — TestRun, TestCommon, and all test implementation classes.
 """
 
+from __future__ import annotations
+
 import traceback
 import os
 import io
@@ -30,67 +32,69 @@ import subprocess
 import threading
 from datetime import datetime
 from threading import Timer
+from typing import Any, Callable
 
 import psutil
 
 import gvtest.testsuite as testsuite
 from rich.console import Console
+from rich.table import Table
 
 _console = Console(highlight=False)
 
 
 class TestRun(object):
 
-    def __init__(self, test, target):
-        self.target = target
-        self.test = test
-        self.runner = test.runner
-        self.lock = threading.Lock()
-        self.duration = 0
+    def __init__(self, test: TestCommon, target: Any | None) -> None:
+        self.target: Any | None = target
+        self.test: TestCommon = test
+        self.runner: Any = test.runner
+        self.lock: threading.Lock = threading.Lock()
+        self.duration: float = 0
         if target is not None:
-            self.config = target.name
+            self.config: str = target.name
         else:
             self.config = self.runner.config
 
-        self.sourceme = None
-        self.envvars = None
+        self.sourceme: str | None = None
+        self.envvars: dict[str, str] | None = None
 
         if self.target is not None:
             self.sourceme = self.target.get_sourceme()
             self.envvars = self.target.get_envvars()
 
-    def get_target_name(self):
+    def get_target_name(self) -> str:
         if self.target is None:
             return self.config
 
         return self.target.name
 
-    def get_stats(self, stats):
+    def get_stats(self, stats: dict[str, int | float]) -> None:
         stats[self.status] += 1
         stats['duration'] = self.duration
 
     # Called by worker to execute the test
-    def run(self):
+    def run(self) -> None:
 
         self.__print_start_message()
 
-        self.output = ''
-        self._output_truncated = False
-        self.status = "passed"
+        self.output: str = ''
+        self._output_truncated: bool = False
+        self.status: str = "passed"
 
-        start_time = datetime.now()
+        start_time: datetime = datetime.now()
 
-        timeout = self.runner.max_timeout
-        self.timeout_reached = False
+        timeout: int = self.runner.max_timeout
+        self.timeout_reached: bool = False
 
         if timeout != -1:
-            timer = Timer(timeout, self.kill)
+            timer: Timer = Timer(timeout, self.kill)
             timer.start()
 
         for command in self.test.commands:
 
             # Apply --cmd / --cmd-exclude filters
-            cmd_name = getattr(command, 'name', None)
+            cmd_name: str | None = getattr(command, 'name', None)
             if cmd_name is not None:
                 if self.runner.commands_filter is not None:
                     if cmd_name not in self.runner.commands_filter:
@@ -99,7 +103,7 @@ class TestRun(object):
                     if cmd_name in self.runner.commands_exclude:
                         continue
 
-            retval = self.__exec_command(command, self.target, self.sourceme, self.envvars)
+            retval: int = self.__exec_command(command, self.target, self.sourceme, self.envvars)
 
             if retval != 0 or self.timeout_reached:
                 if self.timeout_reached:
@@ -133,7 +137,7 @@ class TestRun(object):
 
         self.runner.terminate(self)
 
-    def kill(self):
+    def kill(self) -> None:
         self.lock.acquire()
         self.timeout_reached = True
         if self.current_proc is not None:
@@ -147,23 +151,23 @@ class TestRun(object):
         self.lock.release()
 
     # Print start banner
-    def __print_start_message(self):
-        testname = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
+    def __print_start_message(self) -> None:
+        testname: str = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
-            config = self.target.name
+            config: str = self.target.name
         else:
             config = self.runner.get_config()
         _console.print(f"[blue]{'START'.ljust(8)}[/blue][bold]{testname}[/bold] {config}")
 
     # Print end banner
-    def print_end_message(self):
-        testname = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
+    def print_end_message(self) -> None:
+        testname: str = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
-            config = self.target.name
+            config: str = self.target.name
         else:
             config = self.runner.get_config()
 
-        status_styles = {
+        status_styles: dict[str, tuple[str, str]] = {
             'passed':   ('[green]', 'OK'),
             'failed':   ('[red]',   'KO'),
             'skipped':  ('[yellow]', 'SKIP'),
@@ -172,17 +176,17 @@ class TestRun(object):
         style, label = status_styles.get(self.status, ('[white]', '???'))
         _console.print(f"{style}{label.ljust(8)}[/]{' ' if not label.ljust(8).endswith(' ') else ''}[bold]{testname}[/bold] {config}")
 
-    def __exec_process(self, command, envvars=None):
+    def __exec_process(self, command: str, envvars: dict[str, str] | None = None) -> int:
         self.lock.acquire()
         if self.timeout_reached:
-            return ['', -1]
+            return -1
 
-        env = os.environ.copy()
+        env: dict[str, str] = os.environ.copy()
 
         if envvars is not None:
             env.update(envvars)
 
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True,
+        proc: subprocess.Popen[bytes] = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True,
             cwd=self.test.path, env=env)
 
         self.current_proc = proc
@@ -192,14 +196,14 @@ class TestRun(object):
         for line in io.TextIOWrapper(proc.stdout, encoding="utf-8", errors='replace'):
             self.__dump_test_msg(line)
 
-        retval = proc.wait()
+        retval: int = proc.wait()
         self.current_proc = None
 
         return retval
 
 
-    def __dump_test_msg(self, msg):
-        max_len = self.runner.max_output_len
+    def __dump_test_msg(self, msg: str) -> None:
+        max_len: int = self.runner.max_output_len
         if max_len != -1 and self._output_truncated:
             return  # Already truncated, discard further output
         self.output += msg
@@ -212,10 +216,10 @@ class TestRun(object):
 
 
     # Called by run method to execute specific command
-    def __exec_command(self, command, target, sourceme, envvars):
+    def __exec_command(self, command: testsuite.Command, target: Any | None, sourceme: str | None, envvars: dict[str, str] | None) -> int:
 
         if type(command) == testsuite.Shell:
-            cmd = command.cmd
+            cmd: str = command.cmd
             if self.target is not None:
                 cmd = self.target.format_properties(cmd)
 
@@ -224,7 +228,7 @@ class TestRun(object):
             if sourceme is not None:
                 cmd = f'gvtest_cmd_stub {sourceme} {cmd}'
 
-            retval = 0 if self.__exec_process(cmd, envvars) == command.retval else 1
+            retval: int = 0 if self.__exec_process(cmd, envvars) == command.retval else 1
 
         elif type(command) == testsuite.Checker:
             self.__dump_test_msg(f'--- Checker command ---\n')
@@ -250,47 +254,47 @@ class TestRun(object):
 
 class TestCommon(object):
 
-    def __init__(self, runner, parent, name, target, path):
-        self.runner = runner
-        self.target = target
-        self.name = name
-        self.parent = parent
-        self.full_name = None
-        self.commands = []
-        self.path = path
-        self.status = None
-        self.skipped = None
-        self.description = None
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None) -> None:
+        self.runner: Any = runner
+        self.target: Any | None = target
+        self.name: str = name
+        self.parent: Any | None = parent
+        self.full_name: str | None = None
+        self.commands: list[testsuite.Command] = []
+        self.path: str | None = path
+        self.status: str | None = None
+        self.skipped: str | None = None
+        self.description: str | None = None
         if self.path == '':
             self.path = os.getcwd()
-        self.current_proc = None
+        self.current_proc: subprocess.Popen[bytes] | None = None
 
         self.full_name = self.name
 
         if self.parent is not None:
-            parent_name = self.parent.get_full_name()
+            parent_name: str | None = self.parent.get_full_name()
             if parent_name is not None:
                 self.full_name =  f'{parent_name}:{self.name}'
 
         self.runner.declare_name(self.full_name)
-        self.benchs = []
-        self.runs = []
+        self.benchs: list[list[str]] = []
+        self.runs: list[TestRun] = []
 
-    def skip(self, msg):
+    def skip(self, msg: str) -> TestCommon:
         self.skipped = msg
         return self
 
-    def get_target(self):
+    def get_target(self) -> Any | None:
         return self.target
 
     # Called by user to add commands
-    def add_command(self, command):
+    def add_command(self, command: testsuite.Command) -> None:
         self.commands.append(command)
 
 
     # Called by runner to enqueue this test to the list of tests ready to be executed
-    def enqueue(self):
-        run = TestRun(self, self.target)
+    def enqueue(self) -> None:
+        run: TestRun = TestRun(self, self.target)
         if self.runner.is_skipped(self.get_full_name()) or self.skipped is not None:
             if self.skipped is not None:
                 run.skip_message = self.skipped
@@ -304,50 +308,50 @@ class TestCommon(object):
             self.runs.append(run)
             self.runner.enqueue_test(run)
 
-    def dump_tests(self, table, indent, targets):
+    def dump_tests(self, table: Table, indent: str, targets: list[str]) -> None:
         table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
 
     # Can be called to get full name including hierarchy path
-    def get_full_name(self):
+    def get_full_name(self) -> str | None:
         return self.full_name
 
-    def get_path(self):
+    def get_path(self) -> str:
         return self.full_name.replace(':', '/')
 
-    def add_description(self, description):
+    def add_description(self, description: str) -> None:
         self.description = description
 
 
 class TestImpl(TestCommon, testsuite.Test):
 
-    def __init__(self, runner, parent, name, target, path):
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
 
-    def add_bench(self, extract, name, desc):
+    def add_bench(self, extract: str, name: str, desc: str) -> None:
         self.benchs.append([extract, name, desc])
 
 
 class MakeTestImpl(TestCommon, testsuite.Test):
 
-    def __init__(self, runner, parent, name, target, path, flags, checker=None, retval=0):
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
-        self.flags = flags
+        self.flags: str | None = flags
         if self.flags is not None:
             self.flags += ' ' + ' '.join(self.runner.flags)
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform = self.runner.get_property('platform')
+        platform: str | None = self.runner.get_property('platform')
         if platform is not None:
             self.flags += ' platform=%s' % platform
 
-        workdir = os.environ.get('GVSOC_WORKDIR')
+        workdir: str | None = os.environ.get('GVSOC_WORKDIR')
         if workdir is None:
-            builddir = f'{path}/build/{runner.get_config()}/{self.name}'
+            builddir: str = f'{path}/build/{runner.get_config()}/{self.name}'
         else:
             builddir = f'{workdir}/tests/{self.get_path()}'
         self.flags += f' build={builddir}'
@@ -359,36 +363,36 @@ class MakeTestImpl(TestCommon, testsuite.Test):
         if checker is not None:
             self.add_command(testsuite.Checker('check', checker))
 
-    def add_bench(self, extract, name, desc):
+    def add_bench(self, extract: str, name: str, desc: str) -> None:
         self.benchs.append([extract, name, desc])
 
 
 class GvrunTestImpl(testsuite.SdkTest, TestCommon):
 
-    def __init__(self, runner, parent, name, target, path, flags, checker=None, retval=0):
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
-        self.flags = flags
+        self.flags: str | None = flags
         if self.flags is not None:
             self.flags += ' ' + ' '.join(self.runner.flags)
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform = self.runner.get_property('platform')
+        platform: str | None = self.runner.get_property('platform')
         if platform is not None:
             self.flags += ' --platform=%s' % platform
 
         target = target.get_name()
 
-        workdir = os.environ.get('GVSOC_WORKDIR')
+        workdir: str | None = os.environ.get('GVSOC_WORKDIR')
         if workdir is None:
-            builddir = f'build/{target}/{self.name}'
+            builddir: str = f'build/{target}/{self.name}'
         else:
             builddir = f'{workdir}/tests/{self.get_path()}/{target}'
         self.flags += f' --work-dir={builddir}'
 
-        cmd = f'gvrun --target {target} {self.flags}'
+        cmd: str = f'gvrun --target {target} {self.flags}'
         self.add_command(testsuite.Shell('clean', f'{cmd} clean'))
         self.add_command(testsuite.Shell('build', f'{cmd} build'))
         self.add_command(testsuite.Shell('run', f'{cmd} run', retval=retval))
@@ -396,23 +400,23 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
         if checker is not None:
             self.add_command(testsuite.Checker('check', checker))
 
-    def add_bench(self, extract, name, desc):
+    def add_bench(self, extract: str, name: str, desc: str) -> None:
         self.benchs.append([extract, name, desc])
 
 
 class SdkTestImpl(testsuite.SdkTest, TestCommon):
 
-    def __init__(self, runner, parent, name, target, path, flags, checker=None, retval=0):
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
-        self.flags = flags
+        self.flags: str | None = flags
         if self.flags is not None:
             self.flags += ' ' + ' '.join(self.runner.flags)
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform = self.runner.get_property('platform')
+        platform: str | None = self.runner.get_property('platform')
         if platform is not None:
             self.flags += ' --platform=%s' % platform
 
@@ -425,13 +429,13 @@ class SdkTestImpl(testsuite.SdkTest, TestCommon):
         if checker is not None:
             self.add_command(testsuite.Checker('check', checker))
 
-    def add_bench(self, extract, name, desc):
+    def add_bench(self, extract: str, name: str, desc: str) -> None:
         self.benchs.append([extract, name, desc])
 
 
 class NetlistPowerSdkTestImpl(SdkTestImpl):
 
-    def __init__(self, runner, parent, name, target, path, flags):
+    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None) -> None:
         SdkTestImpl.__init__(self, runner, parent, name, target, path, flags)
 
         self.add_command(testsuite.Shell('power_gen', 'make power_gen %s' % (self.flags)))

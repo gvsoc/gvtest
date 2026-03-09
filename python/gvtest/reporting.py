@@ -20,18 +20,22 @@
 Table row formatting for test output using rich.
 """
 
+from __future__ import annotations
 
-def table_dump_row(table, name, config, duration, passed, failed, skipped, excluded):
+from rich.table import Table
+
+
+def table_dump_row(table: Table, name: str, config: str, duration: float, passed: int, failed: int, skipped: int, excluded: int) -> None:
     """Add a row to a rich Table with appropriate styling for failures."""
 
-    total = passed + failed
+    total: int = passed + failed
 
-    skipped_str = str(skipped) if skipped != 0 else ''
-    excluded_str = str(excluded) if excluded != 0 else ''
+    skipped_str: str = str(skipped) if skipped != 0 else ''
+    excluded_str: str = str(excluded) if excluded != 0 else ''
 
     if failed == 0:
-        failed_str = ''
-        style = None
+        failed_str: str = ''
+        style: str | None = None
     else:
         failed_str = str(failed)
         style = "red"

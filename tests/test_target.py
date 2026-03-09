@@ -70,6 +70,14 @@ class TestTargetEnvvars:
         envvars = t.get_envvars()
         assert envvars == {'NONE_VAR': ''}
 
+    def test_envvars_no_code_execution(self):
+        """Env vars should use literal_eval, not eval — no arbitrary code."""
+        config = json.dumps({'envvars': {'EXPLOIT': '__import__("os").system("echo pwned")'}})
+        t = Target('rv64', config)
+        envvars = t.get_envvars()
+        # Should fail safely (literal_eval rejects function calls), not execute code
+        assert envvars == {'EXPLOIT': ''}
+
 
 class TestTargetProperties:
     """Tests for target property formatting."""

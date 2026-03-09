@@ -778,6 +778,34 @@ def testset_build(testset):
         r.stop()
         assert r.stats.stats['passed'] == 1
 
+    def test_python_paths_available_during_testset_build(self, tmp_path):
+        """Imports inside testset_build() should work (paths still in sys.path)."""
+        lib_dir = tmp_path / 'buildlib'
+        lib_dir.mkdir()
+        (lib_dir / '__init__.py').write_text('')
+        (lib_dir / 'tool.py').write_text('CMD = "echo from_buildlib"\n')
+        
+        config = tmp_path / 'gvtest.yaml'
+        config.write_text(f'python_paths:\n  - {lib_dir.parent}\n')
+        
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    # This import happens inside testset_build — paths must still be available
+    from buildlib.tool import CMD
+    testset.set_name('build_import')
+    test = testset.new_test('test')
+    test.add_command(Shell('run', CMD))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        assert r.stats.stats['passed'] == 1
+
     def test_python_paths_isolated_between_testsets(self, tmp_path):
         """After loading a testset, its python_paths should be removed from sys.path."""
         lib_dir = tmp_path / 'isolated_lib'
@@ -802,3 +830,51 @@ def testset_build(testset):
         
         # The isolated_lib should NOT be in sys.path after loading
         assert str(lib_dir) not in sys.path
+
+
+# ---------------------------------------------------------------------------
+# Module name collision
+# ---------------------------------------------------------------------------
+
+class TestModuleIsolation:
+    """Tests for unique module naming during testset import."""
+
+    def test_two_testsets_dont_collide(self, tmp_path):
+        """Two different testset files should not overwrite each other's modules."""
+        dir_a = tmp_path / 'a'
+        dir_a.mkdir()
+        (dir_a / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+MARKER_A = "from_a"
+
+def testset_build(testset):
+    testset.set_name('suite_a')
+    test = testset.new_test('test_a')
+    test.add_command(Shell('run', f'echo {MARKER_A}'))
+''')
+        
+        dir_b = tmp_path / 'b'
+        dir_b.mkdir()
+        (dir_b / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+MARKER_B = "from_b"
+
+def testset_build(testset):
+    testset.set_name('suite_b')
+    test = testset.new_test('test_b')
+    test.add_command(Shell('run', f'echo {MARKER_B}'))
+''')
+        
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(dir_a / 'testset.cfg'))
+        r.add_testset(str(dir_b / 'testset.cfg'))
+        r.start()
+        r.run()
+        r.stop()
+        assert r.stats.stats['passed'] == 2
+        assert r.stats.stats['failed'] == 0
+        # Verify each test got the right output
+        run_a = r.testsets[0].tests[0].runs[0]
+        run_b = r.testsets[1].tests[0].runs[0]
+        assert 'from_a' in run_a.output
+        assert 'from_b' in run_b.output

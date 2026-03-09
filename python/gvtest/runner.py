@@ -37,6 +37,7 @@ import signal
 import csv
 import importlib
 from importlib.machinery import SourceFileLoader
+import ast
 import json
 import time
 import rich.table
@@ -109,7 +110,7 @@ class Target(object):
         sourceme = self.config.get('sourceme')
 
         if sourceme is not None:
-            return eval(sourceme)
+            return ast.literal_eval(sourceme)
 
         return None
 
@@ -120,7 +121,7 @@ class Target(object):
             result = {}
             for key, value in envvars.items():
                 try:
-                    eval_value = eval(value)
+                    eval_value = ast.literal_eval(value)
                     if eval_value is None:
                         eval_value = ""
                     result[key] = eval_value
@@ -1102,9 +1103,16 @@ class Runner():
                     sys.path.insert(0, path)
                     logging.debug(f"Added to sys.path for testset: {path}")
             
-            spec = importlib.util.spec_from_loader("module.name", SourceFileLoader("module.name", file))
+            # Use a unique module name per file to avoid collisions in sys.modules
+            module_name = f"gvtest_testset_{hash(file)}"
+            spec = importlib.util.spec_from_loader(module_name, SourceFileLoader(module_name, file))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
+
+            # testset_build() must run while python_paths are still in sys.path,
+            # since it may import modules from configured paths
+            testset = TestsetImpl(self, target, parent, path=os.path.dirname(file))
+            module.testset_build(testset)
         except FileNotFoundError as exc:
             raise RuntimeError(bcolors.FAIL + 'Unable to open test configuration file: ' + file + bcolors.ENDC)
         finally:
@@ -1112,9 +1120,6 @@ class Runner():
             # Imported modules remain available via sys.modules cache
             sys.path = saved_sys_path
             logging.debug(f"Restored sys.path after loading testset")
-
-        testset = TestsetImpl(self, target, parent, path=os.path.dirname(file))
-        module.testset_build(testset)
 
         return testset
 

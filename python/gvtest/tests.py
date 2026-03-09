@@ -34,7 +34,9 @@ from threading import Timer
 import psutil
 
 import gvtest.testsuite as testsuite
-from gvtest.reporting import bcolors
+from rich.console import Console
+
+_console = Console(highlight=False)
 
 
 class TestRun(object):
@@ -144,17 +146,16 @@ class TestRun(object):
                 pass
         self.lock.release()
 
-    # Print start bannier
+    # Print start banner
     def __print_start_message(self):
         testname = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
             config = self.target.name
         else:
             config = self.runner.get_config()
-        print (bcolors.OKBLUE + 'START'.ljust(8) + bcolors.ENDC + bcolors.BOLD + testname + bcolors.ENDC + ' %s' % (config))
-        sys.stdout.flush()
+        _console.print(f"[blue]{'START'.ljust(8)}[/blue][bold]{testname}[/bold] {config}")
 
-    # Print end bannier
+    # Print end banner
     def print_end_message(self):
         testname = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
@@ -162,17 +163,14 @@ class TestRun(object):
         else:
             config = self.runner.get_config()
 
-        if self.status == 'passed':
-            test_result_str = bcolors.OKGREEN + 'OK '.ljust(8) + bcolors.ENDC
-        elif self.status == 'failed':
-            test_result_str = bcolors.FAIL + 'KO '.ljust(8) + bcolors.ENDC
-        elif self.status == 'skipped':
-            test_result_str = bcolors.WARNING + 'SKIP '.ljust(8) + bcolors.ENDC
-        elif self.status == 'excluded':
-            test_result_str = bcolors.HEADER + 'EXCLUDE '.ljust(8) + bcolors.ENDC
-
-        print (test_result_str + bcolors.BOLD + testname + bcolors.ENDC + ' %s' % (config))
-        sys.stdout.flush()
+        status_styles = {
+            'passed':   ('[green]', 'OK'),
+            'failed':   ('[red]',   'KO'),
+            'skipped':  ('[yellow]', 'SKIP'),
+            'excluded': ('[magenta]', 'EXCLUDE'),
+        }
+        style, label = status_styles.get(self.status, ('[white]', '???'))
+        _console.print(f"{style}{label.ljust(8)}[/]{' ' if not label.ljust(8).endswith(' ') else ''}[bold]{testname}[/bold] {config}")
 
     def __exec_process(self, command, envvars=None):
         self.lock.acquire()

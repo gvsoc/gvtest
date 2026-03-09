@@ -17,28 +17,8 @@
 #
 
 """
-Terminal colors and table row formatting for test output.
-
-Uses rich for styled terminal output. The bcolors class is kept for
-backward compatibility (used in tests.py for start/end banners).
+Table row formatting for test output using rich.
 """
-
-
-class bcolors:
-    """ANSI color codes for terminal output (legacy, used in test banners)."""
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    BG_HEADER =  '\033[105m'
-    BG_OKBLUE =  '\033[104m'
-    BG_OKGREEN = '\033[102m'
-    BG_WARNING = '\033[103m'
-    BG_FAIL =    '\033[101m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
 
 
 def table_dump_row(table, name, config, duration, passed, failed, skipped, excluded):
@@ -51,17 +31,13 @@ def table_dump_row(table, name, config, duration, passed, failed, skipped, exclu
 
     if failed == 0:
         failed_str = ''
-        name_str = name
-        config_str = config
         style = None
     else:
         failed_str = str(failed)
-        name_str = name
-        config_str = config
         style = "red"
 
     table.add_row(
-        name_str, config_str, f"{duration:.2f}",
+        name, config, f"{duration:.2f}",
         '%d/%d' % (passed, total), failed_str,
         skipped_str, excluded_str,
         style=style

@@ -16,7 +16,7 @@ from gvtest.runner import (
     Runner, TestRun, TestImpl, TestsetImpl, TestCommon,
     MakeTestImpl, Target, Worker,
     TestRunStats, TestStats, TestsetStats,
-    table_dump_row, bcolors
+    table_dump_row,
 )
 from gvtest.testsuite import Shell, Call, Checker
 

@@ -51,7 +51,6 @@ from rich.align import Align
 from gvtest.config import get_python_paths_for_dir
 from gvtest.targets import Target
 from gvtest.stats import TestsetStats
-from gvtest.reporting import bcolors
 from gvtest.testset_impl import TestsetImpl
 
 # Re-export classes that external code (tests, __main__) may import from runner
@@ -61,7 +60,7 @@ from gvtest.tests import (
     GvrunTestImpl, SdkTestImpl, NetlistPowerSdkTestImpl,
 )
 from gvtest.stats import TestRunStats, TestStats, TestsetStats
-from gvtest.reporting import bcolors, table_dump_row
+from gvtest.reporting import table_dump_row
 
 
 class Worker(threading.Thread):
@@ -352,7 +351,7 @@ class Runner():
             testset = TestsetImpl(self, target, parent, path=os.path.dirname(file))
             module.testset_build(testset)
         except FileNotFoundError as exc:
-            raise RuntimeError(bcolors.FAIL + 'Unable to open test configuration file: ' + file + bcolors.ENDC)
+            raise RuntimeError('Unable to open test configuration file: ' + file)
         finally:
             # Restore original sys.path to maintain isolation between testsets
             # Imported modules remain available via sys.modules cache

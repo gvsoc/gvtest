@@ -41,7 +41,6 @@ from importlib.machinery import SourceFileLoader
 
 import psutil
 import rich.table
-from prettytable import PrettyTable
 from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
@@ -249,13 +248,18 @@ class Runner():
 
 
     def dump_table(self):
-        x = PrettyTable(['test', 'config', 'time', 'passed/total', 'failed', 'skipped', 'excluded'])
-        x.align = "r"
-        x.align["test"] = "l"
-        x.align["config"] = "l"
-        self.stats.dump_table(x, self.report_all)
+        console = Console()
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("test", justify="left", no_wrap=True)
+        table.add_column("config", justify="left", no_wrap=True)
+        table.add_column("time", justify="right")
+        table.add_column("passed/total", justify="right")
+        table.add_column("failed", justify="right")
+        table.add_column("skipped", justify="right")
+        table.add_column("excluded", justify="right")
+        self.stats.dump_table(table, self.report_all)
         print()
-        print(x)
+        console.print(table)
 
 
     def dump_junit(self, report_path):

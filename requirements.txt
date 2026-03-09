@@ -1,4 +1,3 @@
 psutil
-prettytable
 pyyaml
 rich

@@ -73,6 +73,7 @@ class TestRun(object):
         self.__print_start_message()
 
         self.output = ''
+        self._output_truncated = False
         self.status = "passed"
 
         start_time = datetime.now()
@@ -85,6 +86,16 @@ class TestRun(object):
             timer.start()
 
         for command in self.test.commands:
+
+            # Apply --cmd / --cmd-exclude filters
+            cmd_name = getattr(command, 'name', None)
+            if cmd_name is not None:
+                if self.runner.commands_filter is not None:
+                    if cmd_name not in self.runner.commands_filter:
+                        continue
+                if self.runner.commands_exclude is not None:
+                    if cmd_name in self.runner.commands_exclude:
+                        continue
 
             retval = self.__exec_command(command, self.target, self.sourceme, self.envvars)
 
@@ -190,7 +201,14 @@ class TestRun(object):
 
 
     def __dump_test_msg(self, msg):
+        max_len = self.runner.max_output_len
+        if max_len != -1 and self._output_truncated:
+            return  # Already truncated, discard further output
         self.output += msg
+        if max_len != -1 and len(self.output) > max_len:
+            self.output = self.output[:max_len]
+            self.output += '\n--- Output truncated at %d bytes ---\n' % max_len
+            self._output_truncated = True
         if self.runner.stdout:
             print (msg[:-1])
 

@@ -30,6 +30,7 @@ This module was split from a monolithic runner.py. The other pieces now live in:
 
 import os
 import logging
+import signal
 import sys
 import csv
 import queue
@@ -67,7 +68,7 @@ from gvtest.reporting import bcolors, table_dump_row
 class Worker(threading.Thread):
 
     def __init__(self, runner):
-        super().__init__()
+        super().__init__(daemon=True)
 
         self.runner = runner
 
@@ -100,6 +101,9 @@ class Runner():
         self.nb_pending_tests = 0
         self.test_skip_list = test_skip_list
         self.max_timeout = max_timeout
+        self.max_output_len = max_output_len
+        self.commands_filter = commands
+        self.commands_exclude = commands_exclude
         self.flags = flags
         self.bench_results = {}
         self.bench_csv_file = bench_csv_file
@@ -219,7 +223,12 @@ class Runner():
 
             self.check_pending_tests()
 
-            self.event.wait()
+            # Only wait if there are still tests running
+            self.lock.acquire()
+            should_wait = self.nb_pending_tests > 0
+            self.lock.release()
+            if should_wait:
+                self.event.wait()
 
         self.stats = TestsetStats()
         for testset in self.testsets:
@@ -266,13 +275,39 @@ class Runner():
         if self.nb_threads == 0:
             self.nb_threads = psutil.cpu_count(logical=True)
 
+        self._interrupted = False
+        self._orig_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+
         for thread_id in range(0, self.nb_threads):
             Worker(self).start()
 
+    def _handle_interrupt(self, signum, frame):
+        """Graceful Ctrl+C: drain pending tests and signal workers to stop."""
+        if self._interrupted:
+            # Second Ctrl+C: force exit
+            signal.signal(signal.SIGINT, self._orig_sigint)
+            raise KeyboardInterrupt
+        self._interrupted = True
+        print('\n--- Interrupted, stopping after current tests finish (Ctrl+C again to force) ---')
+        sys.stdout.flush()
+        # Clear pending tests so no new ones get queued
+        self.lock.acquire()
+        dropped = len(self.pending_tests)
+        self.pending_tests.clear()
+        self.nb_pending_tests -= dropped
+        if self.nb_pending_tests <= 0:
+            self.nb_pending_tests = 0
+            self.event.set()
+        self.lock.release()
 
     def stop(self):
         for thread_id in range(0, self.nb_threads):
             self.queue.put(None)
+        # Restore original signal handler
+        if hasattr(self, '_orig_sigint') and self._orig_sigint is not None:
+            signal.signal(signal.SIGINT, self._orig_sigint)
+            self._orig_sigint = None
 
     def add_testset(self, file):
         if not os.path.isabs(file):
@@ -324,19 +359,37 @@ class Runner():
 
 
     def enqueue_test(self, test):
+        self.lock.acquire()
         self.nb_pending_tests += 1
-
         self.pending_tests.append(test)
+        self.lock.release()
 
 
 
     def check_pending_tests(self):
-        while len(self.pending_tests) > 0:
+        while True:
+            self.lock.acquire()
+            if len(self.pending_tests) == 0:
+                self.lock.release()
+                break
+
+            if self._interrupted:
+                # Drop all remaining pending tests
+                dropped = len(self.pending_tests)
+                self.pending_tests.clear()
+                self.nb_pending_tests -= dropped
+                if self.nb_pending_tests <= 0:
+                    self.nb_pending_tests = 0
+                    self.event.set()
+                self.lock.release()
+                break
+
+            test = self.pending_tests.pop()
+            self.lock.release()
 
             while not self.check_cpu_load():
                 time.sleep(self.cpu_poll_interval)
 
-            test = self.pending_tests.pop()
             self.queue.put(test)
 
 

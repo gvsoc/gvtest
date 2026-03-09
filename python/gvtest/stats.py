@@ -20,24 +20,29 @@
 Statistics collection and aggregation — TestRunStats, TestStats, TestsetStats.
 """
 
+from __future__ import annotations
+
 import os
 import re
+from typing import Any, TextIO
 from xml.sax.saxutils import escape
+
+from rich.table import Table
 
 from gvtest.reporting import table_dump_row
 
 
 class TestRunStats(object):
 
-    def __init__(self, run, parent=None):
-        self.run = run
-        self.parent = parent
-        self.stats = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+    def __init__(self, run: Any, parent: TestStats | None = None) -> None:
+        self.run: Any = run
+        self.parent: TestStats | None = parent
+        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
         run.get_stats(self.stats)
         if parent:
             parent.add_stats(self.stats)
 
-    def dump_table(self, table, dump_name, report_all):
+    def dump_table(self, table: Table, dump_name: bool, report_all: bool) -> None:
         if self.stats['failed'] > 0 or report_all:
             table_dump_row(table,
                 self.run.test.get_full_name() if dump_name else '',
@@ -49,7 +54,7 @@ class TestRunStats(object):
                 self.stats['excluded']
             )
 
-    def dump_junit(self, test_file):
+    def dump_junit(self, test_file: TextIO) -> None:
         if self.run.status != 'excluded':
             fullname = self.run.test.get_full_name()
             if fullname.count(':') == 0:
@@ -76,7 +81,7 @@ class TestRunStats(object):
                                         (chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff),
                                         chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff),
                                         chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff))
-                        xml_line = re.sub(RE_XML_ILLEGAL, "", escape(line))
+                        xml_line: str = re.sub(RE_XML_ILLEGAL, "", escape(line))
                         test_file.write(xml_line)
                     test_file.write('</failure>\n')
             test_file.write('  </testcase>\n')
@@ -84,27 +89,27 @@ class TestRunStats(object):
 
 class TestStats(object):
 
-    def __init__(self, parent=None, test=None):
-        self.parent = parent
-        self.test = test
-        self.child_runs_dict = {}
-        self.child_runs = []
-        self.stats = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+    def __init__(self, parent: TestsetStats | None = None, test: Any = None) -> None:
+        self.parent: TestsetStats | None = parent
+        self.test: Any = test
+        self.child_runs_dict: dict[Any, TestRunStats] = {}
+        self.child_runs: list[TestRunStats] = []
+        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
 
-    def add_child_run(self, run):
+    def add_child_run(self, run: Any) -> None:
         child_run_stats = self.child_runs_dict.get(run.target)
         if child_run_stats is None:
             child_run_stats = TestRunStats(run=run, parent=self)
             self.child_runs_dict[run.target] = child_run_stats
             self.child_runs.append(child_run_stats)
 
-    def add_stats(self, stats):
+    def add_stats(self, stats: dict[str, int | float]) -> None:
         for key in stats.keys():
             self.stats[key] += stats[key]
         if self.parent:
             self.parent.add_stats(stats)
 
-    def dump_table(self, table, report_all):
+    def dump_table(self, table: Table, report_all: bool) -> None:
         if len(self.child_runs) == 0:
             return
 
@@ -125,28 +130,28 @@ class TestStats(object):
             for run in self.child_runs:
                 run.dump_table(table, False, report_all)
 
-    def dump_junit(self, test_file):
+    def dump_junit(self, test_file: TextIO) -> None:
         for run in self.child_runs:
             run.dump_junit(test_file)
 
 
 class TestsetStats(object):
 
-    def __init__(self, testset=None, parent=None):
-        self.child_tests = {}
-        self.child_testsets = {}
+    def __init__(self, testset: Any = None, parent: TestsetStats | None = None) -> None:
+        self.child_tests: dict[str, TestStats] = {}
+        self.child_testsets: dict[str, TestsetStats] = {}
 
-        self.parent = parent
-        self.testset = testset
-        self.stats = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+        self.parent: TestsetStats | None = parent
+        self.testset: Any = testset
+        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
 
-    def add_stats(self, stats):
+    def add_stats(self, stats: dict[str, int | float]) -> None:
         for key in stats.keys():
             self.stats[key] += stats[key]
         if self.parent:
             self.parent.add_stats(stats)
 
-    def add_child_testset(self, testset):
+    def add_child_testset(self, testset: Any) -> None:
         child_testset_stats = self.child_testsets.get(testset.name)
         if child_testset_stats is None:
             child_testset_stats = TestsetStats(testset=testset, parent=self)
@@ -158,7 +163,7 @@ class TestsetStats(object):
         for test in testset.tests:
             child_testset_stats.add_child_test(test)
 
-    def add_child_test(self, test):
+    def add_child_test(self, test: Any) -> None:
         child_test_stats = self.child_tests.get(test.name)
         if child_test_stats is None:
             child_test_stats = TestStats(self, test)
@@ -167,8 +172,8 @@ class TestsetStats(object):
         for run in test.runs:
             child_test_stats.add_child_run(run)
 
-    def dump_table(self, table, report_all):
-        is_empty = True
+    def dump_table(self, table: Table, report_all: bool) -> None:
+        is_empty: bool = True
         for stat in self.stats.values():
             if stat != 0:
                 is_empty = False
@@ -193,19 +198,19 @@ class TestsetStats(object):
         for child in self.child_testsets.values():
             child.dump_table(table, report_all)
 
-    def dump_junit(self, test_file):
+    def dump_junit(self, test_file: TextIO) -> None:
         for child in self.child_testsets.values():
             child.dump_junit(test_file)
 
         for child in self.child_tests.values():
             child.dump_junit(test_file)
 
-    def dump_junit_files(self, report_path):
+    def dump_junit_files(self, report_path: str) -> None:
         os.makedirs(report_path, exist_ok=True)
 
         for stats in self.child_testsets.values():
             testset = stats.testset
-            filename = '%s/TEST-%s.xml' % (report_path, testset.name)
+            filename: str = '%s/TEST-%s.xml' % (report_path, testset.name)
             with open(filename, 'w') as test_file:
                 test_file.write('<?xml version="1.0" encoding="UTF-8"?>\n')
                 test_file.write('<testsuite skipped="%d" errors="%d" failures="%d" name="%s" tests="%d" time="%f">\n' % \

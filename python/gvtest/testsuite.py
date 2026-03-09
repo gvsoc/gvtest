@@ -16,90 +16,93 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 import abc
+from typing import Any, Callable
 
 
 class Target(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
-    def get_name(self): pass
+    def get_name(self) -> str: pass
 
 
 class Command: pass
 
 class Shell(Command):
 
-  def __init__(self, name, cmd, retval=0):
-    self.name = name
-    self.cmd = cmd
-    self.retval = retval
+  def __init__(self, name: str, cmd: str, retval: int = 0) -> None:
+    self.name: str = name
+    self.cmd: str = cmd
+    self.retval: int = retval
 
 
 class Call(Command):
 
-  def __init__(self, name, callback):
-    self.name = name
-    self.callback = callback
+  def __init__(self, name: str, callback: Callable[[], int]) -> None:
+    self.name: str = name
+    self.callback: Callable[[], int] = callback
 
 
 class Checker(Command):
 
-  def __init__(self, name, callback, *kargs, **kwargs):
-    self.name = name
-    self.callback = callback, kargs, kwargs
+  def __init__(self, name: str, callback: Callable[..., Any], *kargs: Any, **kwargs: Any) -> None:
+    self.name: str = name
+    self.callback: tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]] = callback, kargs, kwargs
 
 
 class Test(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
-    def add_bench(self, extract, name, desc): pass
+    def add_bench(self, extract: str, name: str, desc: str) -> None: pass
 
     @abc.abstractmethod
-    def get_path(self): pass
+    def get_path(self) -> str: pass
 
     @abc.abstractmethod
-    def add_command(self, command: Command): pass
+    def add_command(self, command: Command) -> None: pass
 
 
 
 class Testset(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
-    def set_name(self, name: str): pass
+    def set_name(self, name: str) -> None: pass
 
     @abc.abstractmethod
-    def add_target(self, name: str, config): pass
+    def add_target(self, name: str, config: str | None) -> None: pass
 
     @abc.abstractmethod
-    def get_target(self): pass
+    def get_target(self) -> Target: pass
 
     @abc.abstractmethod
-    def import_testset(self, file): pass
+    def import_testset(self, file: str) -> None: pass
 
     @abc.abstractmethod
-    def new_testset(self, testset): pass
+    def new_testset(self, testset: str) -> Testset: pass
 
     @abc.abstractmethod
     def new_test(self, name: str) -> Test: pass
 
     @abc.abstractmethod
-    def new_sdk_test(self, name: str, flags: str | None=None): pass
+    def new_sdk_test(self, name: str, flags: str | None=None) -> SdkTest: pass
 
     @abc.abstractmethod
-    def new_sdk_netlist_power_test(self, name, flags=None): pass
+    def new_sdk_netlist_power_test(self, name: str, flags: str | None = None) -> SdkTest: pass
 
     @abc.abstractmethod
-    def get_property(self, name: str): pass
+    def get_property(self, name: str) -> Any: pass
 
     @abc.abstractmethod
-    def get_platform(self): pass
+    def get_platform(self) -> str | None: pass
 
     @abc.abstractmethod
-    def get_path(self): pass
+    def get_path(self) -> str | None: pass
 
 
 
 class SdkTest(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
-    def add_bench(self, extract, name, desc): pass
+    def add_bench(self, extract: str, name: str, desc: str) -> None: pass

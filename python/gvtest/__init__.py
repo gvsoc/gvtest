@@ -7,3 +7,5 @@ Public API:
     from gvtest.targets import Target
     from gvtest.config import ConfigLoader
 """
+
+from __future__ import annotations

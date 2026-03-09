@@ -20,52 +20,57 @@
 TestsetImpl — concrete implementation of the Testset abstract class.
 """
 
+from __future__ import annotations
+
 import os
+from typing import Any, Callable
+
+from rich.table import Table
 
 import gvtest.testsuite as testsuite
 from gvtest.targets import Target
 from gvtest.tests import (
-    TestImpl, MakeTestImpl, GvrunTestImpl,
+    TestCommon, TestImpl, MakeTestImpl, GvrunTestImpl,
     SdkTestImpl, NetlistPowerSdkTestImpl,
 )
 
 
 class TestsetImpl(testsuite.Testset):
 
-    def __init__(self, runner, target, parent=None, path=None):
-        self.runner = runner
-        self.name = None
-        self.tests = []
-        self.testsets = []
-        self.parent = parent
-        self.path = path
-        self.targets = {}
-        self.active_targets = []
-        self.target = target
+    def __init__(self, runner: Any, target: Any | None, parent: TestsetImpl | None = None, path: str | None = None) -> None:
+        self.runner: Any = runner
+        self.name: str | None = None
+        self.tests: list[TestCommon] = []
+        self.testsets: list[TestsetImpl] = []
+        self.parent: TestsetImpl | None = parent
+        self.path: str | None = path
+        self.targets: dict[str, Target] = {}
+        self.active_targets: list[Target] = []
+        self.target: Any | None = target
 
-    def get_target(self):
+    def get_target(self) -> Any | None:
         return self.target
 
-    def get_path(self):
+    def get_path(self) -> str | None:
         return self.path
 
-    def get_property(self, name):
+    def get_property(self, name: str) -> Any | None:
         return self.runner.get_property(name)
 
-    def get_platform(self):
+    def get_platform(self) -> str | None:
         return self.runner.get_platform()
 
-    def set_name(self, name):
+    def set_name(self, name: str) -> None:
         self.name = name
 
-    def add_target(self, name, config=None):
+    def add_target(self, name: str, config: str | None = None) -> None:
         if config is None:
             config = '{}'
         self.targets[name] = Target(name, config)
 
-    def get_full_name(self):
+    def get_full_name(self) -> str | None:
         if self.parent is not None:
-            parent_name = self.parent.get_full_name()
+            parent_name: str | None = self.parent.get_full_name()
             if parent_name is not None:
                 if self.name is None:
                     return parent_name
@@ -74,50 +79,50 @@ class TestsetImpl(testsuite.Testset):
 
         return self.name
 
-    def import_testset(self, file):
-        filepath = file
+    def import_testset(self, file: str) -> None:
+        filepath: str = file
         if self.path is not None:
             filepath = os.path.join(self.path, file)
 
         for target in self.__get_targets():
             self.testsets.append(self.runner.import_testset(filepath, target, self))
 
-    def add_testset(self, callback):
+    def add_testset(self, callback: Callable[[TestsetImpl], None]) -> None:
         for target in self.__get_targets():
             self.__new_testset(callback, target)
 
-    def __get_targets(self):
+    def __get_targets(self) -> list[Any]:
         if len(self.targets) == 0:
-            targets = [self.target]
+            targets: list[Any] = [self.target]
         else:
-            target_names = self.runner.get_active_targets()
+            target_names: list[str] = self.runner.get_active_targets()
             if len(self.targets) != 0 and len(target_names) == 1 and target_names[0] == 'default':
                 target_names = self.targets
 
             targets = []
             for target_name in target_names:
-                target = self.targets.get(target_name)
+                target: Target | None = self.targets.get(target_name)
                 if target is not None:
                     targets.append(target)
 
         return targets
 
-    def __new_testset(self, callback, target):
-        testset = TestsetImpl(self.runner, target, self, path=self.path)
+    def __new_testset(self, callback: Callable[[TestsetImpl], None], target: Any) -> TestsetImpl:
+        testset: TestsetImpl = TestsetImpl(self.runner, target, self, path=self.path)
         self.testsets.append(testset)
         callback(testset)
         return testset
 
-    def new_testset(self, testset_name):
-        testset = TestsetImpl(self.runner, self.target, self, path=self.path)
+    def new_testset(self, testset_name: str) -> TestsetImpl:
+        testset: TestsetImpl = TestsetImpl(self.runner, self.target, self, path=self.path)
         testset.set_name(testset_name)
         self.testsets.append(testset)
 
         return testset
 
-    def dump_tests(self, table, indent='', parent_targets=[]):
+    def dump_tests(self, table: Table, indent: str = '', parent_targets: list[str] = []) -> None:
 
-        targets = list(self.targets.keys())
+        targets: list[str] = list(self.targets.keys())
         targets += parent_targets
 
         if self.name is not None:
@@ -132,7 +137,7 @@ class TestsetImpl(testsuite.Testset):
                 test.dump_tests(table, indent, targets)
 
 
-    def enqueue(self):
+    def enqueue(self) -> None:
 
         for testset in self.testsets:
             testset.enqueue()
@@ -141,34 +146,34 @@ class TestsetImpl(testsuite.Testset):
             test.enqueue()
 
 
-    def new_test(self, name):
-        test = TestImpl(self.runner, self, name, self.target, self.path)
+    def new_test(self, name: str) -> TestImpl:
+        test: TestImpl = TestImpl(self.runner, self, name, self.target, self.path)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
 
-    def new_gvrun_test(self, name, flags='', checker=None, retval=0):
-        test = GvrunTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
+    def new_gvrun_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0) -> GvrunTestImpl:
+        test: GvrunTestImpl = GvrunTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_make_test(self, name, flags='', checker=None, retval=0, path=None):
-        test = MakeTestImpl(self.runner, self, name, self.target, self.path if path is None else path, flags, checker=checker,
+    def new_make_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0, path: str | None = None) -> MakeTestImpl:
+        test: MakeTestImpl = MakeTestImpl(self.runner, self, name, self.target, self.path if path is None else path, flags, checker=checker,
             retval=retval)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_sdk_test(self, name, flags='', checker=None, retval=0):
-        test = SdkTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
+    def new_sdk_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0) -> SdkTestImpl:
+        test: SdkTestImpl = SdkTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_sdk_netlist_power_test(self, name, flags=''):
-        test = NetlistPowerSdkTestImpl(self.runner, self, name, self.target, self.path, flags)
+    def new_sdk_netlist_power_test(self, name: str, flags: str = '') -> NetlistPowerSdkTestImpl:
+        test: NetlistPowerSdkTestImpl = NetlistPowerSdkTestImpl(self.runner, self, name, self.target, self.path, flags)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test

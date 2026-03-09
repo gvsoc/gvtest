@@ -25,6 +25,8 @@ filesystem root, merges them hierarchically, and adds the specified
 python_paths to sys.path.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import logging

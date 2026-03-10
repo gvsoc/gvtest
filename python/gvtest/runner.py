@@ -245,15 +245,15 @@ class Runner():
             testset.enqueue()
 
         if len(self.pending_tests) > 0:
-
             self.check_pending_tests()
 
-            # Only wait if there are still tests running
-            self.lock.acquire()
-            should_wait: bool = self.nb_pending_tests > 0
-            self.lock.release()
-            if should_wait:
-                self.event.wait()
+        # Wait if there are still tests running
+        # (includes both regular and pytest batch tests)
+        self.lock.acquire()
+        should_wait: bool = self.nb_pending_tests > 0
+        self.lock.release()
+        if should_wait:
+            self.event.wait()
 
         self.stats: TestsetStats = TestsetStats()
         for testset in self.testsets:

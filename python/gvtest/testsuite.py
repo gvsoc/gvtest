@@ -80,6 +80,11 @@ class Testset(object, metaclass=abc.ABCMeta):
     def import_testset(self, file: str) -> None: pass
 
     @abc.abstractmethod
+    def import_pytest(
+        self, path: str, pytest_exe: str = 'pytest'
+    ) -> None: pass
+
+    @abc.abstractmethod
     def new_testset(self, testset_name: str) -> Testset: pass
 
     @abc.abstractmethod

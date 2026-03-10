@@ -29,6 +29,7 @@ from rich.table import Table
 
 import gvtest.testsuite as testsuite
 from gvtest.targets import Target
+from gvtest.pytest_integration import PytestTestset
 from gvtest.tests import (
     TestCommon, TestImpl, MakeTestImpl, GvrunTestImpl,
     SdkTestImpl, NetlistPowerSdkTestImpl,
@@ -156,6 +157,42 @@ class TestsetImpl(testsuite.Testset):
         for test in self.tests:
             test.enqueue()
 
+
+    def import_pytest(
+        self, path: str, pytest_exe: str = 'pytest'
+    ) -> None:
+        """Import pytest tests from a directory or file.
+
+        Discovers all pytest tests at build time and creates
+        gvtest test entries. At run time, selected tests are
+        executed as a single batched pytest invocation.
+
+        Args:
+            path: Directory or file containing pytest tests.
+            pytest_exe: Pytest executable (default: pytest).
+        """
+        if not os.path.isabs(path):
+            if self.path is not None:
+                pytest_path = os.path.join(self.path, path)
+            else:
+                pytest_path = os.path.join(
+                    os.getcwd(), path
+                )
+        else:
+            pytest_path = path
+
+        # Derive a name from the path
+        name = os.path.basename(
+            pytest_path.rstrip('/')
+        )
+
+        pt = PytestTestset(
+            self.runner, self, name, self.target,
+            os.path.dirname(pytest_path) or os.getcwd(),
+            pytest_path, pytest_exe
+        )
+        pt.discover()
+        self.testsets.append(pt)
 
     def new_test(self, name: str) -> TestImpl:
         test: TestImpl = TestImpl(self.runner, self, name, self.target, self.path)

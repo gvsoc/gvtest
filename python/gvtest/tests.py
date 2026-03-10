@@ -177,6 +177,10 @@ class TestRun(object):
         self.lock.release()
 
     # Print start banner
+    def print_start(self) -> None:
+        """Public wrapper for start message."""
+        self.__print_start_message()
+
     def __print_start_message(self) -> None:
         testname: str = (
             self.test.get_full_name() or ''

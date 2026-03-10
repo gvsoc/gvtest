@@ -25,7 +25,12 @@ from __future__ import annotations
 from rich.table import Table
 
 
-def table_dump_row(table: Table, name: str, config: str, duration: int | float, passed: int | float, failed: int | float, skipped: int | float, excluded: int | float) -> None:
+def table_dump_row(
+    table: Table, name: str, config: str,
+    duration: int | float, passed: int | float,
+    failed: int | float, skipped: int | float,
+    excluded: int | float
+) -> None:
     """Add a row to a rich Table with appropriate styling for failures."""
 
     total: int | float = passed + failed

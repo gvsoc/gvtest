@@ -154,7 +154,9 @@ class TestRun(object):
 
     # Print start banner
     def __print_start_message(self) -> None:
-        testname: str = (self.test.get_full_name() or '').ljust(self.runner.get_max_testname_len() + 5)
+        testname: str = (
+            self.test.get_full_name() or ''
+        ).ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
             config: str = self.target.name
         else:
@@ -163,7 +165,9 @@ class TestRun(object):
 
     # Print end banner
     def print_end_message(self) -> None:
-        testname: str = (self.test.get_full_name() or '').ljust(self.runner.get_max_testname_len() + 5)
+        testname: str = (
+            self.test.get_full_name() or ''
+        ).ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
             config: str = self.target.name
         else:
@@ -176,7 +180,11 @@ class TestRun(object):
             'excluded': ('[magenta]', 'EXCLUDE'),
         }
         style, label = status_styles.get(self.status, ('[white]', '???'))
-        _console.print(f"{style}{label.ljust(8)}[/]{' ' if not label.ljust(8).endswith(' ') else ''}[bold]{testname}[/bold] {config}")
+        pad = ' ' if not label.ljust(8).endswith(' ') else ''
+        _console.print(
+            f"{style}{label.ljust(8)}[/]{pad}"
+            f"[bold]{testname}[/bold] {config}"
+        )
 
     def __exec_process(self, command: str, envvars: dict[str, str] | None = None) -> int:
         self.lock.acquire()
@@ -188,8 +196,11 @@ class TestRun(object):
         if envvars is not None:
             env.update(envvars)
 
-        proc: subprocess.Popen[bytes] = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True,
-            cwd=self.test.path, env=env)
+        proc: subprocess.Popen[bytes] = subprocess.Popen(
+            command, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, shell=True,
+            cwd=self.test.path, env=env
+        )
 
         self.current_proc = proc
 
@@ -219,7 +230,11 @@ class TestRun(object):
 
 
     # Called by run method to execute specific command
-    def __exec_command(self, command: testsuite.Command, target: Any | None, sourceme: str | None, envvars: dict[str, str] | None) -> int:
+    def __exec_command(
+        self, command: testsuite.Command,
+        target: Any | None, sourceme: str | None,
+        envvars: dict[str, str] | None
+    ) -> int:
 
         if type(command) == testsuite.Shell:
             cmd: str = command.cmd
@@ -236,7 +251,11 @@ class TestRun(object):
         elif type(command) == testsuite.Checker:
             self.__dump_test_msg(f'--- Checker command ---\n')
             try:
-                result = command.callback[0](self, self.output, *command.callback[1], **command.callback[2])
+                result = command.callback[0](
+                    self, self.output,
+                    *command.callback[1],
+                    **command.callback[2]
+                )
             except:
                 result = (False, "Got exception: " + traceback.format_exc())
 
@@ -257,7 +276,11 @@ class TestRun(object):
 
 class TestCommon(object):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any | None,
+        path: str | None
+    ) -> None:
         self.runner: Any = runner
         self.target: Any | None = target
         self.name: str = name
@@ -328,7 +351,11 @@ class TestCommon(object):
 
 class TestImpl(TestCommon, testsuite.Test):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any | None,
+        path: str | None
+    ) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
@@ -339,7 +366,13 @@ class TestImpl(TestCommon, testsuite.Test):
 
 class MakeTestImpl(TestCommon, testsuite.Test):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any | None, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any | None,
+        path: str | None, flags: str | None,
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0
+    ) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
@@ -373,7 +406,13 @@ class MakeTestImpl(TestCommon, testsuite.Test):
 
 class GvrunTestImpl(testsuite.SdkTest, TestCommon):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any,
+        path: str | None, flags: str | None,
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0
+    ) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
@@ -410,7 +449,13 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
 
 class SdkTestImpl(testsuite.SdkTest, TestCommon):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None, checker: Callable[..., Any] | None = None, retval: int = 0) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any,
+        path: str | None, flags: str | None,
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0
+    ) -> None:
         TestCommon.__init__(self, runner, parent, name, target, path)
         self.runner = runner
         self.name = name
@@ -439,7 +484,11 @@ class SdkTestImpl(testsuite.SdkTest, TestCommon):
 
 class NetlistPowerSdkTestImpl(SdkTestImpl):
 
-    def __init__(self, runner: Any, parent: Any | None, name: str, target: Any, path: str | None, flags: str | None) -> None:
+    def __init__(
+        self, runner: Any, parent: Any | None,
+        name: str, target: Any,
+        path: str | None, flags: str | None
+    ) -> None:
         SdkTestImpl.__init__(self, runner, parent, name, target, path, flags)
 
         self.add_command(testsuite.Shell('power_gen', 'make power_gen %s' % (self.flags)))

@@ -85,11 +85,26 @@ class Worker(threading.Thread):
 
 class Runner():
 
-    def __init__(self, config: str = 'default', load_average: float = 0.9, nb_threads: int = 0, properties: list[str] | None = None,
-            stdout: bool = False, safe_stdout: bool = False, max_output_len: int = -1, max_timeout: int = -1,
-            test_list: list[str] | None = None, test_skip_list: list[str] | None = None, commands: list[str] | None = None, commands_exclude: list[str] | None = None,
-            flags: list[str] | None = None, bench_csv_file: str | None = None, bench_regexp: str | None = None, targets: list[str] | None = None, platform: str = 'gvsoc',
-            report_all: bool = False) -> None:
+    def __init__(
+            self, config: str = 'default',
+            load_average: float = 0.9,
+            nb_threads: int = 0,
+            properties: list[str] | None = None,
+            stdout: bool = False,
+            safe_stdout: bool = False,
+            max_output_len: int = -1,
+            max_timeout: int = -1,
+            test_list: list[str] | None = None,
+            test_skip_list: list[str] | None = None,
+            commands: list[str] | None = None,
+            commands_exclude: list[str] | None = None,
+            flags: list[str] | None = None,
+            bench_csv_file: str | None = None,
+            bench_regexp: str | None = None,
+            targets: list[str] | None = None,
+            platform: str = 'gvsoc',
+            report_all: bool = False
+    ) -> None:
         self.nb_threads: int = nb_threads
         self.queue: queue.Queue[TestRun | None] = queue.Queue()
         self.testsets: list[TestsetImpl] = []
@@ -215,7 +230,11 @@ class Runner():
                 Align.center(final_bar, vertical="middle")
             )
 
-        console.print(Panel.fit(content, border_style="green" if passed == total else "red", padding=(1,2)))
+        console.print(Panel.fit(
+            content,
+            border_style="green" if passed == total else "red",
+            padding=(1, 2)
+        ))
 
     def run(self) -> None:
         self.event.clear()
@@ -324,7 +343,10 @@ class Runner():
         self.testsets.append(self.import_testset(file, self.default_target))
 
 
-    def import_testset(self, file: str, target: Target, parent: TestsetImpl | None = None) -> TestsetImpl:
+    def import_testset(
+        self, file: str, target: Target,
+        parent: TestsetImpl | None = None
+    ) -> TestsetImpl:
         logging.debug(f"Parsing file (path: {file})")
 
         # Get the directory of the testset file

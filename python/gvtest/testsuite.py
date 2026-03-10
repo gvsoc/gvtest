@@ -49,7 +49,10 @@ class Checker(Command):
 
   def __init__(self, name: str, callback: Callable[..., Any], *kargs: Any, **kwargs: Any) -> None:
     self.name: str = name
-    self.callback: tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]] = callback, kargs, kwargs
+    self.callback: tuple[
+        Callable[..., Any], tuple[Any, ...],
+        dict[str, Any]
+    ] = callback, kargs, kwargs
 
 
 class Test(object, metaclass=abc.ABCMeta):

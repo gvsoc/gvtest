@@ -37,7 +37,10 @@ class TestRunStats(object):
     def __init__(self, run: Any, parent: TestStats | None = None) -> None:
         self.run: Any = run
         self.parent: TestStats | None = parent
-        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+        self.stats: dict[str, int | float] = {
+            'passed': 0, 'failed': 0, 'skipped': 0,
+            'excluded': 0, 'duration': 0
+        }
         run.get_stats(self.stats)
         if parent:
             parent.add_stats(self.stats)
@@ -66,7 +69,11 @@ class TestRunStats(object):
             else:
                 testset, testsuite, name = fullname.split(':', 2)
                 classname = f'{self.run.get_target_name()}.{testsuite}'
-            test_file.write('  <testcase classname="%s" name="%s" time="%f">\n' % (classname, name, self.run.duration))
+            test_file.write(
+                '  <testcase classname="%s" name="%s"'
+                ' time="%f">\n'
+                % (classname, name, self.run.duration)
+            )
             if self.run.status == 'skipped':
                 test_file.write('    <skipped message="%s"/>\n' % self.run.skip_message)
             else:
@@ -75,9 +82,15 @@ class TestRunStats(object):
                 else:
                     test_file.write('    <failure>\n')
                     for line in self.run.output:
-                        RE_XML_ILLEGAL = u'([\u0000-\u0008\u000b-\u000c\u000e-\u001f\ufffe-\uffff])' + \
-                                        u'|' + \
-                                        u'([%s-%s][^%s-%s])|([^%s-%s][%s-%s])|([%s-%s]$)|(^[%s-%s])' % \
+                        RE_XML_ILLEGAL = (
+                            u'([\u0000-\u0008\u000b-\u000c'
+                            u'\u000e-\u001f\ufffe-\uffff])'
+                            u'|'
+                            u'([%s-%s][^%s-%s])'
+                            u'|([^%s-%s][%s-%s])'
+                            u'|([%s-%s]$)'
+                            u'|(^[%s-%s])'
+                        ) % \
                                         (chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff),
                                         chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff),
                                         chr(0xd800),chr(0xdbff),chr(0xdc00),chr(0xdfff))
@@ -94,7 +107,10 @@ class TestStats(object):
         self.test: Any = test
         self.child_runs_dict: dict[Any, TestRunStats] = {}
         self.child_runs: list[TestRunStats] = []
-        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+        self.stats: dict[str, int | float] = {
+            'passed': 0, 'failed': 0, 'skipped': 0,
+            'excluded': 0, 'duration': 0
+        }
 
     def add_child_run(self, run: Any) -> None:
         child_run_stats = self.child_runs_dict.get(run.target)
@@ -143,7 +159,10 @@ class TestsetStats(object):
 
         self.parent: TestsetStats | None = parent
         self.testset: Any = testset
-        self.stats: dict[str, int | float] = {'passed': 0, 'failed': 0, 'skipped': 0, 'excluded': 0, 'duration': 0}
+        self.stats: dict[str, int | float] = {
+            'passed': 0, 'failed': 0, 'skipped': 0,
+            'excluded': 0, 'duration': 0
+        }
 
     def add_stats(self, stats: dict[str, int | float]) -> None:
         for key in stats.keys():
@@ -213,8 +232,18 @@ class TestsetStats(object):
             filename: str = '%s/TEST-%s.xml' % (report_path, testset.name)
             with open(filename, 'w') as test_file:
                 test_file.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-                test_file.write('<testsuite skipped="%d" errors="%d" failures="%d" name="%s" tests="%d" time="%f">\n' % \
-                    (stats.stats['skipped'], stats.stats['failed'], stats.stats['failed'], testset.name,
-                    stats.stats['failed'] + stats.stats['passed'], stats.stats['duration']))
+                test_file.write(
+                    '<testsuite skipped="%d" errors="%d"'
+                    ' failures="%d" name="%s"'
+                    ' tests="%d" time="%f">\n' % (
+                        stats.stats['skipped'],
+                        stats.stats['failed'],
+                        stats.stats['failed'],
+                        testset.name,
+                        stats.stats['failed']
+                        + stats.stats['passed'],
+                        stats.stats['duration']
+                    )
+                )
                 stats.dump_junit(test_file)
                 test_file.write('</testsuite>\n')

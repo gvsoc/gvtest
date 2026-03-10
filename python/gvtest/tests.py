@@ -59,6 +59,10 @@ class TestRun(object):
         self.sourceme: str | None = None
         self.envvars: dict[str, str] | None = None
         self.skip_message: str = ""
+        self.status: str = "failed"
+        self.output: str = ""
+        self.timeout_reached: bool = False
+        self.current_proc: subprocess.Popen[bytes] | None = None
 
         if self.target is not None:
             self.sourceme = self.target.get_sourceme()
@@ -76,7 +80,15 @@ class TestRun(object):
 
     # Called by worker to execute the test
     def run(self) -> None:
+        # Check if runner was interrupted before we start
+        if self.runner._interrupted:
+            self.output = ''
+            self.status = "failed"
+            self.duration = 0
+            self.runner.terminate(self)
+            return
 
+        self.runner.register_active(self)
         self.__print_start_message()
 
         self.output: str = ''
@@ -105,11 +117,23 @@ class TestRun(object):
                     if cmd_name in self.runner.commands_exclude:
                         continue
 
-            retval: int = self.__exec_command(command, self.target, self.sourceme, self.envvars)
+            retval: int = self.__exec_command(
+                command, self.target,
+                self.sourceme, self.envvars
+            )
+
+            if self.runner._interrupted:
+                self.__dump_test_msg(
+                    '--- Interrupted ---\n'
+                )
+                self.status = "failed"
+                break
 
             if retval != 0 or self.timeout_reached:
                 if self.timeout_reached:
-                    self.__dump_test_msg('--- Timeout reached ---\n')
+                    self.__dump_test_msg(
+                        '--- Timeout reached ---\n'
+                    )
                 self.status = "failed"
                 break
 

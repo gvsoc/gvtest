@@ -74,9 +74,6 @@ class Testset(object, metaclass=abc.ABCMeta):
     def set_name(self, name: str) -> None: pass
 
     @abc.abstractmethod
-    def add_target(self, name: str, config: str | None) -> None: pass
-
-    @abc.abstractmethod
     def get_target(self) -> Target | None: pass
 
     @abc.abstractmethod

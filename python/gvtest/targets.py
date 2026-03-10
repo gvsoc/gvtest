@@ -54,6 +54,16 @@ class Target(object):
             config = '{}'
         self.config: dict[str, Any] = json.loads(config)
 
+    @classmethod
+    def from_dict(
+        cls, name: str, config: dict[str, Any]
+    ) -> Target:
+        """Create a Target from a YAML-parsed dict."""
+        t = cls.__new__(cls)
+        t.name = name
+        t.config = dict(config)
+        return t
+
     def get_name(self) -> str:
         return self.name
 

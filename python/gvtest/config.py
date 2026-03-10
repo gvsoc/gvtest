@@ -151,7 +151,7 @@ class ConfigLoader:
             return  # Empty config is valid
         
         # Check for unknown keys
-        known_keys = {'python_paths'}
+        known_keys = {'python_paths', 'targets'}
         unknown_keys = set(config.keys()) - known_keys
         if unknown_keys:
             logger.warning(
@@ -173,6 +173,32 @@ class ConfigLoader:
                     raise RuntimeError(
                         f"Invalid path at index {i} in {config_file}: "
                         f"expected a string, got {type(path).__name__}"
+                    )
+        
+        # Validate targets if present
+        if 'targets' in config:
+            targets = config['targets']
+            if not isinstance(targets, dict):
+                raise RuntimeError(
+                    f"Invalid 'targets' in {config_file}: "
+                    f"expected a mapping, got "
+                    f"{type(targets).__name__}"
+                )
+            for name, target_cfg in targets.items():
+                if not isinstance(name, str):
+                    raise RuntimeError(
+                        f"Invalid target name in "
+                        f"{config_file}: "
+                        f"expected a string, got "
+                        f"{type(name).__name__}"
+                    )
+                if target_cfg is not None and \
+                        not isinstance(target_cfg, dict):
+                    raise RuntimeError(
+                        f"Invalid config for target "
+                        f"'{name}' in {config_file}: "
+                        f"expected a mapping or null, got "
+                        f"{type(target_cfg).__name__}"
                     )
     
     def resolve_paths(self, paths: List[str], config_file: Path) -> List[str]:
@@ -209,6 +235,87 @@ class ConfigLoader:
             resolved.append(resolved_path)
         
         return resolved
+    
+    def resolve_targets(
+        self, config_files: List[Path]
+    ) -> Dict[str, Dict]:
+        """
+        Resolve target definitions with scoping semantics.
+        
+        The most specific (leaf-most) config that defines a
+        ``targets`` section determines which targets apply.
+        If no config defines targets, returns empty dict.
+        
+        Target properties are inherited: a parent config
+        defines the base properties, and a child config's
+        targets section restricts which targets are active
+        while inheriting/overriding their properties.
+        
+        Args:
+            config_files: Config files in root → leaf order.
+            
+        Returns:
+            Dict mapping target name to its config dict.
+        """
+        # First pass: collect all target definitions
+        # from all levels (root → leaf)
+        all_defined: Dict[str, Dict] = {}
+        # Track which config was the last to define targets
+        last_targets_file: Optional[Path] = None
+        last_targets_names: Optional[List[str]] = None
+
+        for config_file in config_files:
+            try:
+                config = self.load_config(config_file)
+                self.validate_config(config, config_file)
+                
+                if 'targets' in config:
+                    last_targets_file = config_file
+                    last_targets_names = []
+                    for name, target_cfg in \
+                            config['targets'].items():
+                        if target_cfg is None:
+                            target_cfg = {}
+                        if name in all_defined:
+                            all_defined[name].update(
+                                target_cfg
+                            )
+                        else:
+                            all_defined[name] = dict(
+                                target_cfg
+                            )
+                        last_targets_names.append(name)
+                        logger.debug(
+                            f"Target '{name}' from "
+                            f"{config_file}"
+                        )
+            except Exception as e:
+                logger.error(
+                    f"Error processing {config_file}: {e}"
+                )
+                raise
+
+        if last_targets_names is None:
+            # No config defined targets at all
+            return {}
+
+        # Return only the targets named in the most
+        # specific (leaf) config that has a targets section
+        result: Dict[str, Dict] = {}
+        for name in last_targets_names:
+            result[name] = all_defined[name]
+        return result
+    
+    def get_targets(self) -> Dict[str, Dict]:
+        """
+        Discover and resolve target definitions from configs.
+        
+        Returns:
+            Dict mapping target name to its config dict.
+        """
+        if not self.config_files:
+            self.config_files = self.discover_configs()
+        return self.resolve_targets(self.config_files)
     
     def merge_configs(self, config_files: List[Path]) -> List[str]:
         """

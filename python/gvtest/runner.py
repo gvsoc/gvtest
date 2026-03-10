@@ -109,6 +109,7 @@ class Runner():
         self.queue: queue.Queue[TestRun | None] = queue.Queue()
         self.testsets: list[TestsetImpl] = []
         self.pending_tests: list[TestRun] = []
+        self.active_runs: list[TestRun] = []
         self.max_testname_len: int = 0
         self.config: str = config
         self.event: threading.Event = threading.Event()
@@ -310,20 +311,37 @@ class Runner():
         for thread_id in range(0, self.nb_threads):
             Worker(self).start()
 
-    def _handle_interrupt(self, signum: int, frame: FrameType | None) -> None:
-        """Graceful Ctrl+C: drain pending tests and signal workers to stop."""
+    def _handle_interrupt(
+        self, signum: int, frame: FrameType | None
+    ) -> None:
+        """Graceful Ctrl+C: stop everything."""
         if self._interrupted:
             # Second Ctrl+C: force exit
             signal.signal(signal.SIGINT, self._orig_sigint)
             raise KeyboardInterrupt
         self._interrupted = True
-        print('\n--- Interrupted, stopping after current tests finish (Ctrl+C again to force) ---')
+        print('\n--- Interrupted, killing running tests ---')
         sys.stdout.flush()
-        # Clear pending tests so no new ones get queued
+
         self.lock.acquire()
+        # Clear pending tests
         dropped: int = len(self.pending_tests)
         self.pending_tests.clear()
         self.nb_pending_tests -= dropped
+
+        # Drain the queue so workers don't pick up more
+        while not self.queue.empty():
+            try:
+                item = self.queue.get_nowait()
+                if item is not None:
+                    self.nb_pending_tests -= 1
+            except Exception:
+                break
+
+        # Kill all currently running test processes
+        for run in list(self.active_runs):
+            run.kill()
+
         if self.nb_pending_tests <= 0:
             self.nb_pending_tests = 0
             self.event.set()
@@ -438,7 +456,19 @@ class Runner():
         return self.max_testname_len
 
 
+    def register_active(self, test: TestRun) -> None:
+        self.lock.acquire()
+        self.active_runs.append(test)
+        self.lock.release()
+
+    def unregister_active(self, test: TestRun) -> None:
+        self.lock.acquire()
+        if test in self.active_runs:
+            self.active_runs.remove(test)
+        self.lock.release()
+
     def terminate(self, test: TestRun) -> None:
+        self.unregister_active(test)
         self.lock.acquire()
         self.nb_pending_tests -= 1
 

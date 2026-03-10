@@ -58,6 +58,7 @@ class TestRun(object):
 
         self.sourceme: str | None = None
         self.envvars: dict[str, str] | None = None
+        self.skip_message: str = ""
 
         if self.target is not None:
             self.sourceme = self.target.get_sourceme()
@@ -86,9 +87,10 @@ class TestRun(object):
 
         timeout: int = self.runner.max_timeout
         self.timeout_reached: bool = False
+        timer: Timer | None = None
 
         if timeout != -1:
-            timer: Timer = Timer(timeout, self.kill)
+            timer = Timer(timeout, self.kill)
             timer.start()
 
         for command in self.test.commands:
@@ -111,7 +113,7 @@ class TestRun(object):
                 self.status = "failed"
                 break
 
-        if timeout != -1:
+        if timeout != -1 and timer is not None:
             timer.cancel()
 
         duration = datetime.now() - start_time
@@ -152,7 +154,7 @@ class TestRun(object):
 
     # Print start banner
     def __print_start_message(self) -> None:
-        testname: str = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
+        testname: str = (self.test.get_full_name() or '').ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
             config: str = self.target.name
         else:
@@ -161,7 +163,7 @@ class TestRun(object):
 
     # Print end banner
     def print_end_message(self) -> None:
-        testname: str = self.test.get_full_name().ljust(self.runner.get_max_testname_len() + 5)
+        testname: str = (self.test.get_full_name() or '').ljust(self.runner.get_max_testname_len() + 5)
         if self.target is not None:
             config: str = self.target.name
         else:
@@ -193,6 +195,7 @@ class TestRun(object):
 
         self.lock.release()
 
+        assert proc.stdout is not None
         for line in io.TextIOWrapper(proc.stdout, encoding="utf-8", errors='replace'):
             self.__dump_test_msg(line)
 
@@ -316,6 +319,7 @@ class TestCommon(object):
         return self.full_name
 
     def get_path(self) -> str:
+        assert self.full_name is not None
         return self.full_name.replace(':', '/')
 
     def add_description(self, description: str) -> None:

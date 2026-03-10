@@ -74,13 +74,13 @@ class Testset(object, metaclass=abc.ABCMeta):
     def add_target(self, name: str, config: str | None) -> None: pass
 
     @abc.abstractmethod
-    def get_target(self) -> Target: pass
+    def get_target(self) -> Target | None: pass
 
     @abc.abstractmethod
     def import_testset(self, file: str) -> None: pass
 
     @abc.abstractmethod
-    def new_testset(self, testset: str) -> Testset: pass
+    def new_testset(self, testset_name: str) -> Testset: pass
 
     @abc.abstractmethod
     def new_test(self, name: str) -> Test: pass

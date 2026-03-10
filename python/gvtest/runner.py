@@ -39,6 +39,7 @@ import queue
 import threading
 import time
 import importlib
+import importlib.util
 from importlib.machinery import SourceFileLoader
 from types import FrameType
 from typing import Any
@@ -146,7 +147,8 @@ class Runner():
             return True
 
         for selected_test in self.test_list:
-            if test.get_full_name().find(selected_test) == 0:
+            full_name = test.get_full_name()
+            if full_name is not None and full_name.find(selected_test) == 0:
                 return True
 
         return False
@@ -280,7 +282,7 @@ class Runner():
 
     def start(self) -> None:
         if self.nb_threads == 0:
-            self.nb_threads = psutil.cpu_count(logical=True)
+            self.nb_threads = psutil.cpu_count(logical=True) or 1
 
         self._interrupted: bool = False
         self._orig_sigint: Any = signal.getsignal(signal.SIGINT)
@@ -347,6 +349,7 @@ class Runner():
             # Use a unique module name per file to avoid collisions in sys.modules
             module_name: str = f"gvtest_testset_{hash(file)}"
             spec = importlib.util.spec_from_loader(module_name, SourceFileLoader(module_name, file))
+            assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 

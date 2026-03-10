@@ -63,34 +63,104 @@ commandHelp = """Available commands:
 for name, cmd in commands.items():
 	commandHelp += '  %-10s %s\n' % (name, cmd[0])
 
-parser = argparse.ArgumentParser(description='Run a testset',epilog=commandHelp, formatter_class=argparse.RawDescriptionHelpFormatter)
+parser = argparse.ArgumentParser(
+    description='Run a testset',
+    epilog=commandHelp,
+    formatter_class=argparse.RawDescriptionHelpFormatter
+)
 
 parser.add_argument('command', metavar='CMD', type=str, nargs='*',
                    help='a command to be executed (see the command help afterwards)')
 
-parser.add_argument("--testset", dest="testset", action="append", default=None, metavar="PATH", help="Path to the testset. Default: %(default)s")
-parser.add_argument("--property", dest="properties", action="append", default=[], help="Specifies property")
-parser.add_argument('--py-stack', dest='py_stack', action="store_true", help='Show python exception stack.')
+parser.add_argument(
+    "--testset", dest="testset", action="append",
+    default=None, metavar="PATH",
+    help="Path to the testset. Default: %(default)s"
+)
+parser.add_argument(
+    "--property", dest="properties", action="append",
+    default=[], help="Specifies property"
+)
+parser.add_argument(
+    '--py-stack', dest='py_stack', action="store_true",
+    help='Show python exception stack.'
+)
 parser.add_argument('--verbose', dest='verbose', action="store_true", help='Enable verbose mode.')
 parser.add_argument('--dump-all', dest='all', action="store_true", help='Report all tests.')
-parser.add_argument("--target", dest="targets", action="append", help="Specify a target for which the tests must be run")
-parser.add_argument("--threads", dest="threads", default=0, type=int, help="Specify the number of worker threads")
+parser.add_argument(
+    "--target", dest="targets", action="append",
+    help="Specify a target for which the tests must be run"
+)
+parser.add_argument(
+    "--threads", dest="threads", default=0, type=int,
+    help="Specify the number of worker threads"
+)
 parser.add_argument("--config", dest="config", default='default', help="Specify config name")
-parser.add_argument("--load-average", dest="load_average", default=1.0, type=float, help="Specify the system average load that this tool should try to respect, from 0 to 1")
-parser.add_argument("--stdout", dest="stdout", action="store_true", help="Dumps test output to stdout")
-parser.add_argument("--safe-stdout", dest="safe_stdout", action="store_true", help="Dumps test output to stdout once the test is done")
-parser.add_argument("--max-output-len", dest="max_output_len", type=int, default=-1, help="Maximum length of a test output. Default: %(default)s bytes")
-parser.add_argument("--max-timeout", dest="max_timeout", default=-1, type=int, help="Sets maximum timeout allowed for a test")
-parser.add_argument("--test", dest="test_list", default=None, action="append", help="Specify a test to be run")
-parser.add_argument("--skip", dest="test_skip_list", default=None, action="append", help="Specify a test to be skipped")
-parser.add_argument("--cmd", dest="commands", action="append", default=None, metavar="PATH", help="Add command to be executed. Default: %(default)s")
-parser.add_argument("--cmd-exclude", dest="commands_exclude", action="append", default=None, metavar="PATH", help="Add command to be excluded. Default: %(default)s")
+parser.add_argument(
+    "--load-average", dest="load_average", default=1.0,
+    type=float,
+    help="Specify the system average load that this "
+    "tool should try to respect, from 0 to 1"
+)
+parser.add_argument(
+    "--stdout", dest="stdout", action="store_true",
+    help="Dumps test output to stdout"
+)
+parser.add_argument(
+    "--safe-stdout", dest="safe_stdout",
+    action="store_true",
+    help="Dumps test output to stdout once the test is done"
+)
+parser.add_argument(
+    "--max-output-len", dest="max_output_len", type=int,
+    default=-1,
+    help="Maximum length of a test output. "
+    "Default: %(default)s bytes"
+)
+parser.add_argument(
+    "--max-timeout", dest="max_timeout", default=-1,
+    type=int,
+    help="Sets maximum timeout allowed for a test"
+)
+parser.add_argument(
+    "--test", dest="test_list", default=None,
+    action="append", help="Specify a test to be run"
+)
+parser.add_argument(
+    "--skip", dest="test_skip_list", default=None,
+    action="append",
+    help="Specify a test to be skipped"
+)
+parser.add_argument(
+    "--cmd", dest="commands", action="append",
+    default=None, metavar="PATH",
+    help="Add command to be executed. Default: %(default)s"
+)
+parser.add_argument(
+    "--cmd-exclude", dest="commands_exclude",
+    action="append", default=None, metavar="PATH",
+    help="Add command to be excluded. Default: %(default)s"
+)
 parser.add_argument("--flags", dest="flags", action="append", default=[], help="Specifies flags")
 parser.add_argument("--platform", dest="platform", default='gvsoc', help="Specifies platform")
-parser.add_argument("--junit-report-path", dest="junit_report_path", default='junit-reports', help="Specifies flags")
-parser.add_argument("--bench-regexp", dest="bench_regexp", default='.*@BENCH@(.*)@DESC@(.*)@', help="Specify regexp for extracting benchmark results")
-parser.add_argument("--bench-csv-file", dest="bench_csv_file", default=None, help="Specify CSV file for benchmark results")
-parser.add_argument("--no-fail", dest="no_fail", action="store_true", help="Return an error if there is any test failure")
+parser.add_argument(
+    "--junit-report-path", dest="junit_report_path",
+    default='junit-reports', help="Specifies flags"
+)
+parser.add_argument(
+    "--bench-regexp", dest="bench_regexp",
+    default='.*@BENCH@(.*)@DESC@(.*)@',
+    help="Specify regexp for extracting benchmark results"
+)
+parser.add_argument(
+    "--bench-csv-file", dest="bench_csv_file",
+    default=None,
+    help="Specify CSV file for benchmark results"
+)
+parser.add_argument(
+    "--no-fail", dest="no_fail", action="store_true",
+    help="Return an error if there is any test failure"
+)
 
 
 args = parser.parse_args()
@@ -113,8 +183,13 @@ try:
         config=args.config, load_average=args.load_average, nb_threads=args.threads,
         properties=args.properties, stdout=args.stdout, safe_stdout=args.safe_stdout,
         max_output_len=args.max_output_len, max_timeout=args.max_timeout, test_list=args.test_list,
-        test_skip_list=args.test_skip_list, commands=args.commands, commands_exclude=args.commands_exclude,
-        flags=args.flags, bench_csv_file=args.bench_csv_file, bench_regexp=args.bench_regexp, targets=args.targets,
+        test_skip_list=args.test_skip_list,
+        commands=args.commands,
+        commands_exclude=args.commands_exclude,
+        flags=args.flags,
+        bench_csv_file=args.bench_csv_file,
+        bench_regexp=args.bench_regexp,
+        targets=args.targets,
         platform=args.platform, report_all=args.all
     )
 

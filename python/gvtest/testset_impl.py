@@ -37,7 +37,11 @@ from gvtest.tests import (
 
 class TestsetImpl(testsuite.Testset):
 
-    def __init__(self, runner: Any, target: Any | None, parent: TestsetImpl | None = None, path: str | None = None) -> None:
+    def __init__(
+        self, runner: Any, target: Any | None,
+        parent: TestsetImpl | None = None,
+        path: str | None = None
+    ) -> None:
         self.runner: Any = runner
         self.name: str | None = None
         self.tests: list[TestCommon] = []
@@ -96,7 +100,9 @@ class TestsetImpl(testsuite.Testset):
             targets: list[Any] = [self.target]
         else:
             active_targets: list[str] = self.runner.get_active_targets()
-            if len(self.targets) != 0 and len(active_targets) == 1 and active_targets[0] == 'default':
+            if (len(self.targets) != 0
+                    and len(active_targets) == 1
+                    and active_targets[0] == 'default'):
                 target_keys: list[str] = list(self.targets.keys())
             else:
                 target_keys = active_targets
@@ -155,27 +161,57 @@ class TestsetImpl(testsuite.Testset):
         return test
 
 
-    def new_gvrun_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0) -> GvrunTestImpl:
-        test: GvrunTestImpl = GvrunTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
+    def new_gvrun_test(
+        self, name: str, flags: str = '',
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0
+    ) -> GvrunTestImpl:
+        test: GvrunTestImpl = GvrunTestImpl(
+            self.runner, self, name, self.target,
+            self.path, flags, checker=checker,
+            retval=retval
+        )
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_make_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0, path: str | None = None) -> MakeTestImpl:
-        test: MakeTestImpl = MakeTestImpl(self.runner, self, name, self.target, self.path if path is None else path, flags, checker=checker,
-            retval=retval)
+    def new_make_test(
+        self, name: str, flags: str = '',
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0, path: str | None = None
+    ) -> MakeTestImpl:
+        test: MakeTestImpl = MakeTestImpl(
+            self.runner, self, name, self.target,
+            self.path if path is None else path,
+            flags, checker=checker, retval=retval
+        )
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_sdk_test(self, name: str, flags: str | None = None, checker: Callable[..., Any] | None = None, retval: int = 0) -> SdkTestImpl:
-        test: SdkTestImpl = SdkTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
+    def new_sdk_test(
+        self, name: str, flags: str | None = None,
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0
+    ) -> SdkTestImpl:
+        test: SdkTestImpl = SdkTestImpl(
+            self.runner, self, name, self.target,
+            self.path, flags, checker=checker,
+            retval=retval
+        )
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_sdk_netlist_power_test(self, name: str, flags: str | None = None) -> NetlistPowerSdkTestImpl:
-        test: NetlistPowerSdkTestImpl = NetlistPowerSdkTestImpl(self.runner, self, name, self.target, self.path, flags)
+    def new_sdk_netlist_power_test(
+        self, name: str, flags: str | None = None
+    ) -> NetlistPowerSdkTestImpl:
+        test: NetlistPowerSdkTestImpl = (
+            NetlistPowerSdkTestImpl(
+                self.runner, self, name,
+                self.target, self.path, flags
+            )
+        )
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test

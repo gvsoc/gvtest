@@ -51,12 +51,12 @@ class TestRunnerInit:
 
     def test_default_target_no_targets(self):
         r = Runner(properties=[], flags=[])
-        assert r.targets == ['default']
+        assert r.target_names == ['default']
         assert r.default_target.name == 'default'
 
     def test_explicit_targets(self):
         r = Runner(properties=[], flags=[], targets=['rv64', 'pulp-open'])
-        assert r.targets == ['rv64', 'pulp-open']
+        assert r.target_names == ['rv64', 'pulp-open']
         assert r.default_target.name == 'rv64'
 
     def test_get_platform(self):
@@ -720,6 +720,10 @@ class TestTargetsInTestset:
     """Tests for target-aware testset execution."""
 
     def test_testset_with_target(self, tmp_path):
+        # Define target in gvtest.yaml
+        config = tmp_path / 'gvtest.yaml'
+        config.write_text('targets:\n  my_target: {}\n')
+
         testset_file = tmp_path / 'testset.cfg'
         testset_file.write_text('''
 from gvtest.testsuite import *
@@ -730,7 +734,6 @@ def target_tests(testset):
 
 def testset_build(testset):
     testset.set_name('targeted')
-    testset.add_target('my_target')
     testset.add_testset(callback=target_tests)
 ''')
         r = Runner(properties=[], flags=[], nb_threads=1, targets=['my_target'])

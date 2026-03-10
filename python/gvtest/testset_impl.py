@@ -48,8 +48,6 @@ class TestsetImpl(testsuite.Testset):
         self.testsets: list[TestsetImpl] = []
         self.parent: TestsetImpl | None = parent
         self.path: str | None = path
-        self.targets: dict[str, Target] = {}
-        self.active_targets: list[Target] = []
         self.target: Any | None = target
 
     def get_target(self) -> Any | None:
@@ -67,11 +65,6 @@ class TestsetImpl(testsuite.Testset):
     def set_name(self, name: str) -> None:
         self.name = name
 
-    def add_target(self, name: str, config: str | None = None) -> None:
-        if config is None:
-            config = '{}'
-        self.targets[name] = Target(name, config)
-
     def get_full_name(self) -> str | None:
         if self.parent is not None:
             parent_name: str | None = self.parent.get_full_name()
@@ -88,32 +81,43 @@ class TestsetImpl(testsuite.Testset):
         if self.path is not None:
             filepath = os.path.join(self.path, file)
 
-        for target in self.__get_targets():
-            self.testsets.append(self.runner.import_testset(filepath, target, self))
+        sub_dir = os.path.dirname(filepath)
+
+        if self.runner._has_own_targets(sub_dir):
+            # Sub-dir defines its own targets.
+            sub_targets = (
+                self.runner._resolve_targets_for_dir(sub_dir)
+            )
+            sub_names = [t.name for t in sub_targets]
+            my_name = (
+                self.target.name
+                if hasattr(self.target, 'name')
+                else 'default'
+            )
+
+            if my_name == 'default' or my_name in sub_names:
+                # First parent to reach here, or parent's
+                # target matches: fan out to sub's targets
+                for target in sub_targets:
+                    self.testsets.append(
+                        self.runner.import_testset(
+                            filepath, target, self
+                        )
+                    )
+            # else: parent's target not in sub's list → skip
+        else:
+            # Inherit parent's target
+            self.testsets.append(
+                self.runner.import_testset(
+                    filepath, self.target, self
+                )
+            )
 
     def add_testset(self, callback: Callable[[TestsetImpl], None]) -> None:
-        for target in self.__get_targets():
-            self.__new_testset(callback, target)
-
-    def __get_targets(self) -> list[Any]:
-        if len(self.targets) == 0:
-            targets: list[Any] = [self.target]
-        else:
-            active_targets: list[str] = self.runner.get_active_targets()
-            if (len(self.targets) != 0
-                    and len(active_targets) == 1
-                    and active_targets[0] == 'default'):
-                target_keys: list[str] = list(self.targets.keys())
-            else:
-                target_keys = active_targets
-
-            targets = []
-            for target_name in target_keys:
-                target: Target | None = self.targets.get(target_name)
-                if target is not None:
-                    targets.append(target)
-
-        return targets
+        # No fan-out here: the testset already has its
+        # target assigned by import_testset / add_testset
+        # in Runner
+        self.__new_testset(callback, self.target)
 
     def __new_testset(self, callback: Callable[[TestsetImpl], None], target: Any) -> TestsetImpl:
         testset: TestsetImpl = TestsetImpl(self.runner, target, self, path=self.path)
@@ -130,8 +134,7 @@ class TestsetImpl(testsuite.Testset):
 
     def dump_tests(self, table: Table, indent: str = '', parent_targets: list[str] = []) -> None:
 
-        targets: list[str] = list(self.targets.keys())
-        targets += parent_targets
+        targets: list[str] = list(parent_targets)
 
         if self.name is not None:
             table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))

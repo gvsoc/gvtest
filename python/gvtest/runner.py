@@ -53,7 +53,8 @@ from rich import box
 from rich.progress import Progress, BarColumn, TextColumn, TaskProgressColumn
 from rich.align import Align
 
-from gvtest.config import get_python_paths_for_dir
+from pathlib import Path
+from gvtest.config import get_python_paths_for_dir, ConfigLoader
 from gvtest.targets import Target
 from gvtest.stats import TestsetStats
 from gvtest.testset_impl import TestsetImpl
@@ -128,12 +129,12 @@ class Runner():
         self.bench_csv_file: str | None = bench_csv_file
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
-        self.targets: list[str] = targets if targets is not None else ['default']
+        self.target_names: list[str] = targets if targets is not None else ['default']
         self.platform: str = platform
         if targets is None:
             self.default_target: Target = Target('default')
         else:
-            self.default_target = Target(self.targets[0])
+            self.default_target = Target(self.target_names[0])
         self.cpu_poll_interval: float = 0.1
         self.report_all: bool = report_all
         if properties is not None:
@@ -150,7 +151,7 @@ class Runner():
                         self.bench_results[row[0]] = row[1:]
 
     def get_active_targets(self) -> list[str]:
-        return self.targets
+        return self.target_names
 
     def get_platform(self) -> str:
         return self.platform
@@ -358,7 +359,64 @@ class Runner():
     def add_testset(self, file: str) -> None:
         if not os.path.isabs(file):
             file = os.path.join(os.getcwd(), file)
-        self.testsets.append(self.import_testset(file, self.default_target))
+
+        # Resolve targets for the root testset's directory
+        testset_dir = os.path.dirname(file)
+        targets = self._resolve_targets_for_dir(testset_dir)
+
+        if targets:
+            for target in targets:
+                self.testsets.append(
+                    self.import_testset(file, target, None)
+                )
+        else:
+            self.testsets.append(
+                self.import_testset(
+                    file, self.default_target, None
+                )
+            )
+
+    def _has_own_targets(self, directory: str) -> bool:
+        """Check if directory has its own gvtest.yaml with
+        a targets section (not inherited from parent)."""
+        config_file = os.path.join(
+            directory, 'gvtest.yaml'
+        )
+        if not os.path.exists(config_file):
+            return False
+        try:
+            loader = ConfigLoader(directory)
+            config = loader.load_config(Path(config_file))
+            return 'targets' in config
+        except Exception:
+            return False
+
+    def _resolve_targets_for_dir(
+        self, directory: str
+    ) -> list[Target]:
+        """Resolve targets for a specific directory from
+        gvtest.yaml hierarchy. Returns list of Target objects
+        applicable to this directory, filtered by CLI --target
+        if specified."""
+        loader = ConfigLoader(directory)
+        loader.config_files = loader.discover_configs()
+        yaml_targets = loader.resolve_targets(
+            loader.config_files
+        )
+
+        if not yaml_targets:
+            return []
+
+        # Build Target objects
+        targets: list[Target] = []
+        for name, cfg in yaml_targets.items():
+            # If CLI specifies targets, filter
+            if (self.target_names != ['default']
+                    and name not in self.target_names):
+                continue
+            targets.append(Target.from_dict(name, cfg))
+
+        return targets
 
 
     def import_testset(

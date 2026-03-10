@@ -334,3 +334,146 @@ class TestLoadAndApply:
         # This may or may not find configs outside tmp_path
         # but at minimum shouldn't crash
         loader.load_and_apply()
+
+
+class TestTargetsInConfig:
+    """Tests for target definitions in gvtest.yaml."""
+
+    def test_single_target(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+            "    sourceme: /opt/rv64.sh\n"
+        )
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert 'rv64' in targets
+        assert targets['rv64']['sourceme'] == '/opt/rv64.sh'
+
+    def test_multiple_targets(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text(
+            "targets:\n"
+            "  pulp-open:\n"
+            "    sourceme: /opt/pulp-open.sh\n"
+            "  siracusa:\n"
+            "    sourceme: /opt/siracusa.sh\n"
+        )
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert len(targets) == 2
+        assert 'pulp-open' in targets
+        assert 'siracusa' in targets
+
+    def test_target_with_envvars(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+            "    sourceme: ${SDK}/setup.sh\n"
+            "    envvars:\n"
+            "      CC: ${TOOLCHAIN}/bin/gcc\n"
+        )
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert targets['rv64']['envvars']['CC'] == '${TOOLCHAIN}/bin/gcc'
+
+    def test_target_with_properties(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+            "    properties:\n"
+            "      chip: rv64\n"
+            "      arch: riscv\n"
+        )
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert targets['rv64']['properties']['chip'] == 'rv64'
+
+    def test_hierarchical_target_merge(self, tmp_path):
+        """Leaf config overrides root for same target."""
+        root_config = tmp_path / "gvtest.yaml"
+        root_config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+            "    sourceme: /root/setup.sh\n"
+            "    properties:\n"
+            "      chip: rv64\n"
+        )
+        child = tmp_path / "sub"
+        child.mkdir()
+        child_config = child / "gvtest.yaml"
+        child_config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+            "    sourceme: /child/setup.sh\n"
+        )
+        loader = ConfigLoader(str(child))
+        targets = loader.get_targets()
+        # Leaf overrides sourceme
+        assert targets['rv64']['sourceme'] == '/child/setup.sh'
+        # Root properties are kept
+        assert targets['rv64']['properties']['chip'] == 'rv64'
+
+    def test_child_targets_restrict_scope(self, tmp_path):
+        """Child with own targets restricts to those only."""
+        root_config = tmp_path / "gvtest.yaml"
+        root_config.write_text(
+            "targets:\n"
+            "  rv64: {}\n"
+        )
+        child = tmp_path / "sub"
+        child.mkdir()
+        child_config = child / "gvtest.yaml"
+        child_config.write_text(
+            "targets:\n"
+            "  pulp-open: {}\n"
+        )
+        loader = ConfigLoader(str(child))
+        targets = loader.get_targets()
+        # Child defines its own targets: only pulp-open
+        assert 'pulp-open' in targets
+        assert 'rv64' not in targets
+
+    def test_child_inherits_parent_targets(self, tmp_path):
+        """Child without targets inherits parent's."""
+        root_config = tmp_path / "gvtest.yaml"
+        root_config.write_text(
+            "targets:\n"
+            "  rv64: {}\n"
+            "  pulp-open: {}\n"
+        )
+        child = tmp_path / "sub"
+        child.mkdir()
+        # No gvtest.yaml in child
+        loader = ConfigLoader(str(child))
+        targets = loader.get_targets()
+        assert 'rv64' in targets
+        assert 'pulp-open' in targets
+
+    def test_no_targets_section(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text("python_paths: []\n")
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert targets == {}
+
+    def test_empty_target_config(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text(
+            "targets:\n"
+            "  rv64:\n"
+        )
+        loader = ConfigLoader(str(tmp_path))
+        targets = loader.get_targets()
+        assert 'rv64' in targets
+        assert targets['rv64'] == {}
+
+    def test_invalid_targets_type(self, tmp_path):
+        config = tmp_path / "gvtest.yaml"
+        config.write_text("targets:\n  - rv64\n")
+        loader = ConfigLoader(str(tmp_path))
+        with pytest.raises(RuntimeError, match="expected a mapping"):
+            loader.get_targets()

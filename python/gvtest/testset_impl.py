@@ -95,12 +95,14 @@ class TestsetImpl(testsuite.Testset):
         if len(self.targets) == 0:
             targets: list[Any] = [self.target]
         else:
-            target_names: list[str] = self.runner.get_active_targets()
-            if len(self.targets) != 0 and len(target_names) == 1 and target_names[0] == 'default':
-                target_names = self.targets
+            active_targets: list[str] = self.runner.get_active_targets()
+            if len(self.targets) != 0 and len(active_targets) == 1 and active_targets[0] == 'default':
+                target_keys: list[str] = list(self.targets.keys())
+            else:
+                target_keys = active_targets
 
             targets = []
-            for target_name in target_names:
+            for target_name in target_keys:
                 target: Target | None = self.targets.get(target_name)
                 if target is not None:
                     targets.append(target)
@@ -166,13 +168,13 @@ class TestsetImpl(testsuite.Testset):
             self.tests.append(test)
         return test
 
-    def new_sdk_test(self, name: str, flags: str = '', checker: Callable[..., Any] | None = None, retval: int = 0) -> SdkTestImpl:
+    def new_sdk_test(self, name: str, flags: str | None = None, checker: Callable[..., Any] | None = None, retval: int = 0) -> SdkTestImpl:
         test: SdkTestImpl = SdkTestImpl(self.runner, self, name, self.target, self.path, flags, checker=checker, retval=retval)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
 
-    def new_sdk_netlist_power_test(self, name: str, flags: str = '') -> NetlistPowerSdkTestImpl:
+    def new_sdk_netlist_power_test(self, name: str, flags: str | None = None) -> NetlistPowerSdkTestImpl:
         test: NetlistPowerSdkTestImpl = NetlistPowerSdkTestImpl(self.runner, self, name, self.target, self.path, flags)
         if self.runner.is_selected(test):
             self.tests.append(test)

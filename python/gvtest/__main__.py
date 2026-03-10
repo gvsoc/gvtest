@@ -127,12 +127,15 @@ try:
         if commands.get(command) == None:
             raise RuntimeError('Invalid command: ' + command)
 
-        commands.get(command)[1](runner, args)
+        cmd_entry = commands.get(command)
+        assert cmd_entry is not None
+        cmd_entry[1](runner, args)
 
     runner.stop()
 
 except RuntimeError as e:
-    runner.stop()
+    if runner is not None:
+        runner.stop()
 
     if args.py_stack:
         raise
@@ -145,5 +148,5 @@ except:
         runner.stop()
     raise
 
-if args.no_fail and runner.stats.stats['failed'] != 0:
+if args.no_fail and runner is not None and runner.stats.stats['failed'] != 0:
   exit(1)

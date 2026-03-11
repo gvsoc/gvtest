@@ -66,6 +66,9 @@ class Test(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def add_command(self, command: Command) -> None: pass
 
+    @abc.abstractmethod
+    def depends_on(self, *tests: Test) -> None: pass
+
 
 
 class Testset(object, metaclass=abc.ABCMeta):

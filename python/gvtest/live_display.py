@@ -98,8 +98,11 @@ class LiveDisplay:
     def test_started(
         self, test_id: int, name: str, config: str
     ) -> None:
-        """No-op for progress mode (no running panel)."""
-        pass
+        """Log START message above the progress bar."""
+        self.log(
+            f"[blue]{'START'.ljust(8)}[/blue]"
+            f"[bold]{name}[/bold] {config}"
+        )
 
     def test_finished(
         self, test_id: int, status: str

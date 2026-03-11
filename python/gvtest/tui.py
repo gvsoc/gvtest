@@ -198,7 +198,7 @@ class CursesTUI:
         curses.init_pair(3, curses.COLOR_GREEN, -1)
         curses.init_pair(4, curses.COLOR_YELLOW, -1)
         curses.init_pair(5, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(6, curses.COLOR_CYAN, -1)
+        curses.init_pair(6, curses.COLOR_BLUE, -1)
         # Progress bar colors (background)
         curses.init_pair(7, curses.COLOR_BLACK,
                          curses.COLOR_GREEN)
@@ -601,6 +601,9 @@ class CursesTUI:
                     completed / total * bar_w
                 )
                 filled_w = max(1, min(filled_w, bar_w))
+                # Ensure at least 1 empty char when not done
+                if completed < total and filled_w == bar_w:
+                    filled_w = bar_w - 1
                 # Distribute within filled_w
                 g = max(1, round(
                     passed / completed * filled_w
@@ -753,6 +756,10 @@ class CursesTUI:
                 self.completed / self.total * bar_w
             )
             filled_w = max(1, min(filled_w, bar_w))
+            # Ensure at least 1 empty char when not done
+            if (self.completed < self.total
+                    and filled_w == bar_w):
+                filled_w = bar_w - 1
             g = max(1, round(
                 self.passed / self.completed * filled_w
             )) if self.passed > 0 else 0

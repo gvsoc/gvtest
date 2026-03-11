@@ -255,7 +255,7 @@ class Runner():
             from gvtest.live_display import LiveDisplay
             from rich.console import Console
             self.live_display = LiveDisplay(
-                Console(highlight=False)
+                Console(highlight=False, stderr=True)
             )
             # Start with 0, update total after enqueue
             self.live_display.start(0)

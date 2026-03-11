@@ -143,6 +143,7 @@ class Runner():
         self.tui: Any = None
         self.stats: TestsetStats = TestsetStats()
         self.nb_total_tests: int = 0
+        self._module_cache: dict[str, Any] = {}
         if properties is not None:
             for prop in properties:
               name, value = prop.split('=')
@@ -493,12 +494,17 @@ class Runner():
                     sys.path.insert(0, path)
                     logging.debug(f"Added to sys.path for testset: {path}")
             
-            # Use a unique module name per file to avoid collisions in sys.modules
+            # Cache modules: import once, call testset_build per target.
+            # This preserves global state across targets.
             module_name: str = f"gvtest_testset_{hash(file)}"
-            spec = importlib.util.spec_from_loader(module_name, SourceFileLoader(module_name, file))
-            assert spec is not None and spec.loader is not None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            if module_name in self._module_cache:
+                module = self._module_cache[module_name]
+            else:
+                spec = importlib.util.spec_from_loader(module_name, SourceFileLoader(module_name, file))
+                assert spec is not None and spec.loader is not None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self._module_cache[module_name] = module
 
             # testset_build() must run while python_paths are still in sys.path,
             # since it may import modules from configured paths
@@ -545,7 +551,23 @@ class Runner():
                 self.lock.release()
                 break
 
-            test: TestRun = self.pending_tests.pop()
+            # Find a test whose dependencies are met
+            test: TestRun | None = None
+            for i in range(
+                len(self.pending_tests) - 1, -1, -1
+            ):
+                candidate = self.pending_tests[i]
+                if candidate.test.deps_satisfied():
+                    test = self.pending_tests.pop(i)
+                    break
+
+            if test is None:
+                # All pending tests have unmet deps;
+                # wait for running tests to finish
+                self.lock.release()
+                time.sleep(0.1)
+                continue
+
             self.lock.release()
 
             while not self.check_cpu_load():

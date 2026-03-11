@@ -60,6 +60,7 @@ class TestRun(object):
         self.envvars: dict[str, str] | None = None
         self.skip_message: str = ""
         self.status: str = "failed"
+        self.finished: bool = False
         self.output: str = ""
         self.timeout_reached: bool = False
         self.current_proc: subprocess.Popen[bytes] | None = None
@@ -84,6 +85,7 @@ class TestRun(object):
         if self.runner._interrupted:
             self.output = ''
             self.status = "failed"
+            self.finished = True
             self.duration = 0
             self.runner.terminate(self)
             return
@@ -220,6 +222,7 @@ class TestRun(object):
 
     # Print end banner
     def print_end_message(self) -> None:
+        self.finished = True
         testname: str = (
             self.test.get_full_name() or ''
         ).ljust(self.runner.get_max_testname_len() + 5)
@@ -391,6 +394,7 @@ class TestCommon(object):
         self.runner.declare_name(self.full_name)
         self.benchs: list[list[str]] = []
         self.runs: list[TestRun] = []
+        self.dependencies: list[TestCommon] = []
 
     def skip(self, msg: str) -> TestCommon:
         self.skipped = msg
@@ -402,6 +406,26 @@ class TestCommon(object):
     # Called by user to add commands
     def add_command(self, command: testsuite.Command) -> None:
         self.commands.append(command)
+
+    def depends_on(self, *tests: testsuite.Test) -> None:
+        """Declare that this test depends on other tests.
+
+        This test will not start until all dependencies
+        have completed (passed, failed, or skipped).
+        """
+        for t in tests:
+            if isinstance(t, TestCommon):
+                self.dependencies.append(t)
+
+    def deps_satisfied(self) -> bool:
+        """Check if all dependencies have completed."""
+        for dep in self.dependencies:
+            if not dep.runs:
+                return False
+            for run in dep.runs:
+                if not run.finished:
+                    return False
+        return True
 
 
     # Called by runner to enqueue this test to the list of tests ready to be executed

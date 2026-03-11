@@ -458,13 +458,18 @@ class Runner():
             return []
 
         # Build Target objects
+        config_dir: str | None = getattr(
+            loader, '_targets_config_dir', None
+        )
         targets: list[Target] = []
         for name, cfg in yaml_targets.items():
             # If CLI specifies targets, filter
             if (self.target_names != ['default']
                     and name not in self.target_names):
                 continue
-            targets.append(Target.from_dict(name, cfg))
+            t = Target.from_dict(name, cfg)
+            t.config_dir = config_dir
+            targets.append(t)
 
         return targets
 

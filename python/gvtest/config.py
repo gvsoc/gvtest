@@ -304,6 +304,13 @@ class ConfigLoader:
         result: Dict[str, Dict] = {}
         for name in last_targets_names:
             result[name] = all_defined[name]
+
+        # Store the directory of the config that defined
+        # the targets, for resolving relative paths
+        self._targets_config_dir: str | None = (
+            str(last_targets_file.parent)
+            if last_targets_file is not None else None
+        )
         return result
     
     def get_targets(self) -> Dict[str, Dict]:

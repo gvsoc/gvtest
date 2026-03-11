@@ -112,6 +112,16 @@ parser.add_argument(
     help="Dumps test output to stdout once the test is done"
 )
 parser.add_argument(
+    "--no-progress", dest="no_progress",
+    action="store_true",
+    help="Disable live progress bar"
+)
+parser.add_argument(
+    "--tui", dest="tui",
+    action="store_true",
+    help="Launch full-screen TUI with split-pane display"
+)
+parser.add_argument(
     "--max-output-len", dest="max_output_len", type=int,
     default=-1,
     help="Maximum length of a test output. "
@@ -190,23 +200,33 @@ try:
         bench_csv_file=args.bench_csv_file,
         bench_regexp=args.bench_regexp,
         targets=args.targets,
-        platform=args.platform, report_all=args.all
+        platform=args.platform, report_all=args.all,
+        progress=not args.no_progress
     )
 
     for testset in args.testset:
         runner.add_testset(testset)
 
-    runner.start()
+    if args.tui:
+        from gvtest.tui import run_tui
+        run_tui(runner)
+        # Print summary after TUI exits
+        runner.dump_table()
+        runner.summary()
+    else:
+        runner.start()
 
-    for command in args.command:
-        if commands.get(command) == None:
-            raise RuntimeError('Invalid command: ' + command)
+        for command in args.command:
+            if commands.get(command) == None:
+                raise RuntimeError(
+                    'Invalid command: ' + command
+                )
 
-        cmd_entry = commands.get(command)
-        assert cmd_entry is not None
-        cmd_entry[1](runner, args)
+            cmd_entry = commands.get(command)
+            assert cmd_entry is not None
+            cmd_entry[1](runner, args)
 
-    runner.stop()
+        runner.stop()
 
 except RuntimeError as e:
     if runner is not None:

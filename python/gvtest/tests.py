@@ -204,7 +204,19 @@ class TestRun(object):
             config: str = self.target.name
         else:
             config = self.runner.get_config()
-        _console.print(f"[blue]{'START'.ljust(8)}[/blue][bold]{testname}[/bold] {config}")
+        if self.runner.tui is not None:
+            self.runner.tui.test_started(
+                id(self), testname.strip(), config
+            )
+        elif self.runner.live_display is not None:
+            self.runner.live_display.test_started(
+                id(self), testname.strip(), config
+            )
+        else:
+            _console.print(
+                f"[blue]{'START'.ljust(8)}[/blue]"
+                f"[bold]{testname}[/bold] {config}"
+            )
 
     # Print end banner
     def print_end_message(self) -> None:
@@ -222,12 +234,26 @@ class TestRun(object):
             'skipped':  ('[yellow]', 'SKIP'),
             'excluded': ('[magenta]', 'EXCLUDE'),
         }
-        style, label = status_styles.get(self.status, ('[white]', '???'))
-        pad = ' ' if not label.ljust(8).endswith(' ') else ''
-        _console.print(
-            f"{style}{label.ljust(8)}[/]{pad}"
+        style, label = status_styles.get(
+            self.status, ('[white]', '???')
+        )
+        msg = (
+            f"{style}{label.ljust(8)}[/] "
             f"[bold]{testname}[/bold] {config}"
         )
+
+        if self.runner.tui is not None:
+            self.runner.tui.test_finished(
+                id(self), self.status,
+                testname.strip(), config
+            )
+        elif self.runner.live_display is not None:
+            self.runner.live_display.test_finished(
+                id(self), self.status
+            )
+            self.runner.live_display.log(msg)
+        else:
+            _console.print(msg)
 
     def __exec_process(self, command: str, envvars: dict[str, str] | None = None) -> int:
         self.lock.acquire()
@@ -381,6 +407,13 @@ class TestCommon(object):
     # Called by runner to enqueue this test to the list of tests ready to be executed
     def enqueue(self) -> None:
         run: TestRun = TestRun(self, self.target)
+        config = (
+            self.target.name if self.target is not None
+            else self.runner.get_config()
+        )
+        self.runner.count_test()
+        if self.runner.tui is not None:
+            self.runner.tui.count_target(config)
         if self.runner.is_skipped(self.get_full_name()) or self.skipped is not None:
             if self.skipped is not None:
                 run.skip_message = self.skipped

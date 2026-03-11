@@ -253,7 +253,11 @@ class Runner():
         should_wait: bool = self.nb_pending_tests > 0
         self.lock.release()
         if should_wait:
-            self.event.wait()
+            # Use a timeout loop so SIGINT can be delivered
+            # (event.wait() without timeout can block signal
+            # handling on some platforms)
+            while not self.event.is_set():
+                self.event.wait(timeout=0.5)
 
         self.stats: TestsetStats = TestsetStats()
         for testset in self.testsets:

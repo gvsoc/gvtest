@@ -168,12 +168,27 @@ class TestRun(object):
         self.timeout_reached = True
         if self.current_proc is not None:
             try:
-                process = psutil.Process(pid=self.current_proc.pid)
-
-                for children in process.children(recursive=True):
-                    os.kill(children.pid, signal.SIGKILL)
-            except:
+                # Kill the entire process group (created by
+                # start_new_session=True) — this immediately
+                # terminates the test and all its children
+                pgid = os.getpgid(self.current_proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Process already exited
                 pass
+            except OSError:
+                # Fallback: kill individual processes
+                try:
+                    process = psutil.Process(
+                        pid=self.current_proc.pid
+                    )
+                    for child in process.children(
+                        recursive=True
+                    ):
+                        os.kill(child.pid, signal.SIGKILL)
+                    self.current_proc.kill()
+                except Exception:
+                    pass
         self.lock.release()
 
     # Print start banner
@@ -224,19 +239,36 @@ class TestRun(object):
         if envvars is not None:
             env.update(envvars)
 
+        # Use a PTY to isolate terminal state — prevents
+        # tests from corrupting the parent terminal
+        # (e.g. raw mode, no-echo from SDL2/ncurses)
+        master_fd, slave_fd = os.openpty()
+
         proc: subprocess.Popen[bytes] = subprocess.Popen(
-            command, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, shell=True,
-            cwd=self.test.path, env=env
+            command, stdout=slave_fd,
+            stderr=slave_fd, stdin=slave_fd,
+            shell=True, cwd=self.test.path, env=env,
+            start_new_session=True
         )
+
+        # Close slave in parent — only the child uses it
+        os.close(slave_fd)
 
         self.current_proc = proc
 
         self.lock.release()
 
-        assert proc.stdout is not None
-        for line in io.TextIOWrapper(proc.stdout, encoding="utf-8", errors='replace'):
-            self.__dump_test_msg(line)
+        # Read from master fd
+        master_file = os.fdopen(master_fd, 'rb')
+        try:
+            for line in io.TextIOWrapper(
+                master_file, encoding="utf-8",
+                errors='replace'
+            ):
+                self.__dump_test_msg(line)
+        except IOError:
+            # PTY closed when process exits
+            pass
 
         retval: int = proc.wait()
         self.current_proc = None

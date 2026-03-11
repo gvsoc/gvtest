@@ -53,6 +53,7 @@ class Target(object):
         if config is None:
             config = '{}'
         self.config: dict[str, Any] = json.loads(config)
+        self.config_dir: str | None = None
 
     @classmethod
     def from_dict(
@@ -62,6 +63,7 @@ class Target(object):
         t = cls.__new__(cls)
         t.name = name
         t.config = dict(config)
+        t.config_dir: str | None = None
         return t
 
     def get_name(self) -> str:
@@ -70,7 +72,16 @@ class Target(object):
     def get_sourceme(self) -> str | None:
         sourceme = self.config.get('sourceme')
         if sourceme is not None:
-            return _expand_env(sourceme)
+            sourceme = _expand_env(sourceme)
+            if not os.path.isabs(sourceme):
+                config_dir = getattr(
+                    self, 'config_dir', None
+                )
+                if config_dir is not None:
+                    sourceme = os.path.join(
+                        config_dir, sourceme
+                    )
+            return sourceme
         return None
 
     def get_envvars(self) -> dict[str, str] | None:

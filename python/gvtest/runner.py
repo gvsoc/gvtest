@@ -104,7 +104,8 @@ class Runner():
             bench_regexp: str | None = None,
             targets: list[str] | None = None,
             platform: str = 'gvsoc',
-            report_all: bool = False
+            report_all: bool = False,
+            progress: bool = False
     ) -> None:
         self.nb_threads: int = nb_threads
         self.queue: queue.Queue[TestRun | None] = queue.Queue()
@@ -137,6 +138,11 @@ class Runner():
             self.default_target = Target(self.target_names[0])
         self.cpu_poll_interval: float = 0.1
         self.report_all: bool = report_all
+        self.progress: bool = progress
+        self.live_display: Any = None
+        self.tui: Any = None
+        self.stats: TestsetStats = TestsetStats()
+        self.nb_total_tests: int = 0
         if properties is not None:
             for prop in properties:
               name, value = prop.split('=')
@@ -240,9 +246,31 @@ class Runner():
 
     def run(self) -> None:
         self.event.clear()
+        self.nb_total_tests = 0
+
+        # Start live display before enqueue so it catches
+        # skipped/excluded tests too
+        if self.progress and self.tui is None:
+            from gvtest.live_display import LiveDisplay
+            from rich.console import Console
+            self.live_display = LiveDisplay(
+                Console(highlight=False)
+            )
+            # Start with 0, update total after enqueue
+            self.live_display.start(0)
 
         for testset in self.testsets:
             testset.enqueue()
+
+        # Update totals now that all tests are counted
+        if self.live_display is not None:
+            self.live_display.set_total(
+                self.nb_total_tests
+            )
+
+        # Notify TUI of total test count
+        if self.tui is not None:
+            self.tui.set_total(self.nb_total_tests)
 
         if len(self.pending_tests) > 0:
             self.check_pending_tests()
@@ -258,6 +286,11 @@ class Runner():
             # handling on some platforms)
             while not self.event.is_set():
                 self.event.wait(timeout=0.5)
+
+        # Stop live display
+        if self.live_display is not None:
+            self.live_display.stop()
+            self.live_display = None
 
         self.stats: TestsetStats = TestsetStats()
         for testset in self.testsets:
@@ -310,8 +343,16 @@ class Runner():
             self.nb_threads = psutil.cpu_count(logical=True) or 1
 
         self._interrupted: bool = False
-        self._orig_sigint: Any = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, self._handle_interrupt)
+        import threading as _threading
+        if _threading.current_thread() is _threading.main_thread():
+            self._orig_sigint: Any = signal.getsignal(
+                signal.SIGINT
+            )
+            signal.signal(
+                signal.SIGINT, self._handle_interrupt
+            )
+        else:
+            self._orig_sigint = signal.SIG_DFL
 
         for thread_id in range(0, self.nb_threads):
             Worker(self).start()
@@ -356,7 +397,11 @@ class Runner():
         for thread_id in range(0, self.nb_threads):
             self.queue.put(None)
         # Restore original signal handler
-        if hasattr(self, '_orig_sigint') and self._orig_sigint is not None:
+        import threading as _threading
+        if (hasattr(self, '_orig_sigint')
+                and self._orig_sigint is not None
+                and _threading.current_thread()
+                is _threading.main_thread()):
             signal.signal(signal.SIGINT, self._orig_sigint)
             self._orig_sigint = None
 
@@ -469,6 +514,10 @@ class Runner():
 
         return testset
 
+
+    def count_test(self) -> None:
+        """Increment total test count (incl. skipped)."""
+        self.nb_total_tests += 1
 
     def enqueue_test(self, test: TestRun) -> None:
         self.lock.acquire()

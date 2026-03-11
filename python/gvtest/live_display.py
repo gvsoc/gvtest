@@ -83,7 +83,7 @@ class LiveDisplay:
         self.live = Live(
             self._render(),
             console=self.console,
-            refresh_per_second=4,
+            auto_refresh=False,
             transient=False,
         )
         self.live.start()
@@ -105,7 +105,8 @@ class LiveDisplay:
         )
 
     def test_finished(
-        self, test_id: int, status: str
+        self, test_id: int, status: str,
+        message: str | None = None
     ) -> None:
         if not self._started:
             return
@@ -117,18 +118,25 @@ class LiveDisplay:
                 self.failed += 1
             elif status in ('skipped', 'excluded'):
                 self.skipped += 1
+            if message is not None and self.live is not None:
+                self.live.console.print(
+                    message, highlight=False
+                )
             self._update()
 
     def log(self, message: str) -> None:
         """Print a message above the live display."""
         if self.live is not None:
-            self.live.console.print(
-                message, highlight=False
-            )
+            with self.lock:
+                self.live.console.print(
+                    message, highlight=False
+                )
+                self.live.refresh()
 
     def _update(self) -> None:
         if self.live is not None:
             self.live.update(self._render())
+            self.live.refresh()
 
     def _render(self) -> Text:
         """Render the progress bar with colored segments."""

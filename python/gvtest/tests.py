@@ -252,9 +252,8 @@ class TestRun(object):
             )
         elif self.runner.live_display is not None:
             self.runner.live_display.test_finished(
-                id(self), self.status
+                id(self), self.status, msg
             )
-            self.runner.live_display.log(msg)
         else:
             _console.print(msg)
 

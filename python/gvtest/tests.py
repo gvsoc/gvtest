@@ -40,7 +40,7 @@ import gvtest.testsuite as testsuite
 from rich.console import Console
 from rich.table import Table
 
-_console = Console(highlight=False)
+_console = Console(highlight=False, stderr=True)
 
 
 class TestRun(object):
@@ -268,36 +268,28 @@ class TestRun(object):
         if envvars is not None:
             env.update(envvars)
 
-        # Use a PTY to isolate terminal state — prevents
-        # tests from corrupting the parent terminal
-        # (e.g. raw mode, no-echo from SDL2/ncurses)
-        master_fd, slave_fd = os.openpty()
-
+        # Use pipes + start_new_session for isolation.
+        # The new session prevents child processes from
+        # corrupting the parent terminal (SDL2/ncurses),
+        # and os.killpg() can kill the whole group.
         proc: subprocess.Popen[bytes] = subprocess.Popen(
-            command, stdout=slave_fd,
-            stderr=slave_fd, stdin=slave_fd,
+            command, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
             shell=True, cwd=self.test.path, env=env,
             start_new_session=True
         )
-
-        # Close slave in parent — only the child uses it
-        os.close(slave_fd)
 
         self.current_proc = proc
 
         self.lock.release()
 
-        # Read from master fd
-        master_file = os.fdopen(master_fd, 'rb')
-        try:
-            for line in io.TextIOWrapper(
-                master_file, encoding="utf-8",
-                errors='replace'
-            ):
-                self.__dump_test_msg(line)
-        except IOError:
-            # PTY closed when process exits
-            pass
+        assert proc.stdout is not None
+        for line in io.TextIOWrapper(
+            proc.stdout, encoding="utf-8",
+            errors='replace'
+        ):
+            self.__dump_test_msg(line)
 
         retval: int = proc.wait()
         self.current_proc = None

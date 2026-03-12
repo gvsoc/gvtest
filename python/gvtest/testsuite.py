@@ -108,6 +108,12 @@ class Testset(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_path(self) -> str | None: pass
 
+    @abc.abstractmethod
+    def set_container(self, **kwargs: Any) -> None: pass
+
+    @abc.abstractmethod
+    def get_container(self) -> Any: pass
+
 
 
 class SdkTest(object, metaclass=abc.ABCMeta):

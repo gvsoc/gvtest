@@ -39,6 +39,7 @@ from typing import Any
 
 from rich.console import Console
 
+from gvtest.container import ContainerConfig
 from gvtest.tests import TestCommon, TestRun
 
 _console = Console(highlight=False)
@@ -58,28 +59,50 @@ def _build_pytest_cmd(
 
 
 def discover_pytest_tests(
-    path: str, pytest_exe: str = 'pytest'
+    path: str, pytest_exe: str = 'pytest',
+    container: ContainerConfig | None = None,
 ) -> tuple[list[str], str]:
     """Run pytest --collect-only to discover test node IDs.
 
     Args:
         path: Directory or file to discover tests in.
         pytest_exe: Pytest executable name/path.
+        container: Optional container config. When set,
+            discovery runs inside the container.
 
     Returns:
         Tuple of (node_ids, resolved_exe). The resolved_exe
         may differ from pytest_exe if a fallback was used.
     """
-    cmd = _build_pytest_cmd(
+    pytest_args = _build_pytest_cmd(
         pytest_exe, ['--collect-only', '-q', path]
     )
+    cwd = os.path.dirname(path) or '.'
+
+    if container is not None:
+        # Run discovery inside the container
+        inner_cmd = ' '.join(pytest_args)
+        cmd = container.build_run_cmd(
+            inner_cmd=inner_cmd, cwd=cwd
+        )
+        use_shell = False
+    else:
+        cmd = pytest_args
+        use_shell = False
+
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True, timeout=60,
-            cwd=os.path.dirname(path) or '.'
+            capture_output=True, text=True, timeout=120,
+            cwd=cwd
         )
     except FileNotFoundError:
+        if container is not None:
+            logger.error(
+                f"Container runtime not found for "
+                f"pytest discovery"
+            )
+            return [], pytest_exe
         # Try fallback: use current Python interpreter
         if pytest_exe == 'pytest':
             fallback = f'{sys.executable} -m pytest'
@@ -88,7 +111,7 @@ def discover_pytest_tests(
                 f"'{fallback}'"
             )
             return discover_pytest_tests(
-                path, fallback
+                path, fallback, container
             )
         logger.error(
             f"pytest executable '{pytest_exe}' not found"
@@ -120,6 +143,7 @@ class PytestTestRun(TestRun):
         self, test: TestCommon, target: Any | None
     ) -> None:
         super().__init__(test, target)
+        self._result_set: threading.Event = threading.Event()
 
     def run(self) -> None:
         """Not used — results are set directly by the
@@ -134,6 +158,7 @@ class PytestTestRun(TestRun):
         self.status = status
         self.output = output
         self.duration = duration
+        self._result_set.set()
 
 
 class PytestTest(TestCommon):
@@ -185,11 +210,22 @@ class PytestTestset:
                 return f'{parent_name}:{self.name}'
         return self.name
 
+    def _get_container(self) -> ContainerConfig | None:
+        """Return the container config from the parent
+        testset, if any."""
+        if self.parent is not None and hasattr(
+            self.parent, 'get_container'
+        ):
+            return self.parent.get_container()
+        return None
+
     def discover(self) -> None:
         """Discover pytest tests and create PytestTest
         entries."""
+        container = self._get_container()
         node_ids, resolved_exe = discover_pytest_tests(
-            self.pytest_path, self.pytest_exe
+            self.pytest_path, self.pytest_exe,
+            container=container,
         )
         # Use the resolved executable (may be fallback)
         self.pytest_exe = resolved_exe
@@ -296,9 +332,22 @@ class PytestTestset:
         # Collect node IDs
         node_ids = [t.node_id for t in active_tests]
 
-        # Create temp file for JUnit XML
+        # Get container config
+        container = self._get_container()
+
+        # Create temp file for JUnit XML.
+        # When using a container, the file must be at a
+        # path visible inside the container. We use the
+        # test's working directory (which is bind-mounted
+        # transparently) so both sides see the same path.
+        xml_dir = (
+            os.path.realpath(self.path)
+            if container is not None
+            else None
+        )
         xml_fd, xml_path = tempfile.mkstemp(
-            suffix='.xml', prefix='gvtest_pytest_'
+            suffix='.xml', prefix='gvtest_pytest_',
+            dir=xml_dir,
         )
         os.close(xml_fd)
 
@@ -338,16 +387,30 @@ class PytestTestset:
 
             start_time = datetime.now()
 
-            # Run pytest
-            full_cmd = (
+            # Run pytest — either inside container or
+            # directly on the host
+            inner_cmd = (
                 f'{sourceme_prefix}'
                 f'{" ".join(cmd)}'
             )
-            logger.debug(f"Running pytest batch: {full_cmd}")
+            logger.debug(
+                f"Running pytest batch: {inner_cmd}"
+            )
+
+            if container is not None:
+                exec_cmd = container.build_run_cmd(
+                    inner_cmd=inner_cmd,
+                    cwd=self.path,
+                    extra_env=run0.envvars,
+                )
+                use_shell = False
+            else:
+                exec_cmd = ['bash', '-c', inner_cmd]
+                use_shell = False
 
             try:
                 result = subprocess.run(
-                    ['bash', '-c', full_cmd],
+                    exec_cmd,
                     capture_output=True, text=True,
                     env=env, cwd=self.path,
                     timeout=self.runner.max_timeout

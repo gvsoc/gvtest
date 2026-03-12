@@ -6,6 +6,7 @@ Public API:
     from gvtest.runner import Runner
     from gvtest.targets import Target
     from gvtest.config import ConfigLoader
+    from gvtest.container import ContainerConfig
 """
 
 from __future__ import annotations

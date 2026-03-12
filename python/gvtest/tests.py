@@ -257,6 +257,16 @@ class TestRun(object):
         else:
             _console.print(msg)
 
+    def _get_container(self):
+        """Return the container config from the test's
+        parent testset, if any."""
+        parent = self.test.parent
+        if parent is not None and hasattr(
+            parent, 'get_container'
+        ):
+            return parent.get_container()
+        return None
+
     def __exec_process(self, command: str, envvars: dict[str, str] | None = None) -> int:
         self.lock.acquire()
         if self.timeout_reached:
@@ -267,15 +277,31 @@ class TestRun(object):
         if envvars is not None:
             env.update(envvars)
 
+        # Check if this test should run inside a container
+        container = self._get_container()
+        if container is not None:
+            # Build docker run command — the container
+            # sees the same filesystem paths as the host
+            docker_cmd = container.build_run_cmd(
+                inner_cmd=command,
+                cwd=self.test.path,
+                extra_env=envvars,
+            )
+            shell_cmd = docker_cmd
+            use_shell = False
+        else:
+            shell_cmd = command
+            use_shell = True
+
         # Use pipes + start_new_session for isolation.
         # The new session prevents child processes from
         # corrupting the parent terminal (SDL2/ncurses),
         # and os.killpg() can kill the whole group.
         proc: subprocess.Popen[bytes] = subprocess.Popen(
-            command, stdout=subprocess.PIPE,
+            shell_cmd, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            shell=True, cwd=self.test.path, env=env,
+            shell=use_shell, cwd=self.test.path, env=env,
             start_new_session=True
         )
 

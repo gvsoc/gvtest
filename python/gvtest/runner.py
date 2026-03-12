@@ -54,7 +54,7 @@ from rich.progress import Progress, BarColumn, TextColumn, TaskProgressColumn
 from rich.align import Align
 
 from pathlib import Path
-from gvtest.config import get_python_paths_for_dir, ConfigLoader
+from gvtest.config import get_python_paths_for_dir, get_container_for_dir, ConfigLoader
 from gvtest.targets import Target
 from gvtest.stats import TestsetStats
 from gvtest.testset_impl import TestsetImpl
@@ -514,6 +514,16 @@ class Runner():
             # testset_build() must run while python_paths are still in sys.path,
             # since it may import modules from configured paths
             testset: TestsetImpl = TestsetImpl(self, target, parent, path=os.path.dirname(file))
+
+            # Apply container config from gvtest.yaml if present
+            # and the testset doesn't already have one set
+            container_dict = get_container_for_dir(testset_dir)
+            if container_dict is not None:
+                from gvtest.container import ContainerConfig
+                testset.container = ContainerConfig.from_dict(
+                    container_dict
+                )
+
             module.testset_build(testset)
         except FileNotFoundError as exc:
             raise RuntimeError('Unable to open test configuration file: ' + file)

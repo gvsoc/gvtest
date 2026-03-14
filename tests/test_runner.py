@@ -744,6 +744,206 @@ def testset_build(testset):
         assert r.stats.stats['passed'] == 1
 
 
+    def test_cli_target_skips_untargeted_tests(self, tmp_path):
+        """When --target X is specified, tests without any
+        target definition should be skipped entirely."""
+        # No gvtest.yaml → no targets defined
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('no_target')
+    test = testset.new_test('should_not_run')
+    test.add_command(Shell('run', 'echo bad'))
+''')
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['some_target']
+        )
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        # No tests should have run
+        assert r.stats.stats['passed'] == 0
+        assert r.stats.stats['failed'] == 0
+
+    def test_no_cli_target_runs_all(self, tmp_path):
+        """When no --target is specified, tests without
+        targets should run normally."""
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('default_run')
+    test = testset.new_test('should_run')
+    test.add_command(Shell('run', 'echo ok'))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        assert r.stats.stats['passed'] == 1
+
+    def test_cli_target_runs_only_matching(self, tmp_path):
+        """When --target X is specified, only tests with
+        target X should run, not untargeted tests."""
+        config = tmp_path / 'gvtest.yaml'
+        config.write_text(
+            'targets:\n  target_a: {}\n  target_b: {}\n'
+        )
+
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('multi')
+    test = testset.new_test('targeted_test')
+    test.add_command(Shell('run', 'echo ok'))
+''')
+        # Request only target_a
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['target_a']
+        )
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        # Should run once (target_a only, not target_b)
+        assert r.stats.stats['passed'] == 1
+
+    def test_cli_target_with_sub_testset_targets(
+        self, tmp_path
+    ):
+        """When --target X is specified, root has no targets
+        but a sub-testset defines X, the sub's tests should
+        run and root's direct tests should be skipped."""
+        # Sub-testset with targets
+        sub_dir = tmp_path / 'sub'
+        sub_dir.mkdir()
+        sub_config = sub_dir / 'gvtest.yaml'
+        sub_config.write_text(
+            'targets:\n  spatz_v2: {}\n  rv64: {}\n'
+        )
+        sub_testset = sub_dir / 'testset.cfg'
+        sub_testset.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('sub')
+    test = testset.new_test('targeted_test')
+    test.add_command(Shell('run', 'echo targeted'))
+''')
+        # Root testset imports sub, also has its own test
+        root_testset = tmp_path / 'testset.cfg'
+        root_testset.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('root')
+    test = testset.new_test('untargeted_test')
+    test.add_command(Shell('run', 'echo untargeted'))
+    testset.import_testset('sub/testset.cfg')
+''')
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['spatz_v2']
+        )
+        r.add_testset(str(root_testset))
+        r.start()
+        r.run()
+        r.stop()
+        # Only the sub's test for spatz_v2 should run,
+        # not the root's untargeted test
+        assert r.stats.stats['passed'] == 1
+
+    def test_multi_target_across_yaml_files(
+        self, tmp_path
+    ):
+        """When --target A --target B and A/B come from
+        different gvtest.yaml files, both should run."""
+        # Sub1 has target_a
+        sub1 = tmp_path / 'sub1'
+        sub1.mkdir()
+        (sub1 / 'gvtest.yaml').write_text(
+            'targets:\n  target_a: {}\n'
+        )
+        (sub1 / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('sub1')
+    test = testset.new_test('test_a')
+    test.add_command(Shell('run', 'echo a'))
+''')
+        # Sub2 has target_b
+        sub2 = tmp_path / 'sub2'
+        sub2.mkdir()
+        (sub2 / 'gvtest.yaml').write_text(
+            'targets:\n  target_b: {}\n'
+        )
+        (sub2 / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('sub2')
+    test = testset.new_test('test_b')
+    test.add_command(Shell('run', 'echo b'))
+''')
+        # Root imports both
+        root = tmp_path / 'testset.cfg'
+        root.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('root')
+    testset.import_testset('sub1/testset.cfg')
+    testset.import_testset('sub2/testset.cfg')
+''')
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['target_a', 'target_b']
+        )
+        r.add_testset(str(root))
+        r.start()
+        r.run()
+        r.stop()
+        # Both sub-testsets should run (1 test each)
+        assert r.stats.stats['passed'] == 2
+
+    def test_no_cli_target_runs_all_yaml_targets(
+        self, tmp_path
+    ):
+        """When no --target is specified and YAML defines
+        targets, all targets should run."""
+        config = tmp_path / 'gvtest.yaml'
+        config.write_text(
+            'targets:\n  target_a: {}\n  target_b: {}\n'
+        )
+
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('all_targets')
+    test = testset.new_test('run_both')
+    test.add_command(Shell('run', 'echo ok'))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        # Should run twice (once per target)
+        assert r.stats.stats['passed'] == 2
+
+
 # ---------------------------------------------------------------------------
 # Config integration (gvtest.yaml + testset loading)
 # ---------------------------------------------------------------------------

@@ -136,6 +136,14 @@ class Runner():
             self.default_target: Target = Target('default')
         else:
             self.default_target = Target(self.target_names[0])
+        # Mark the default target as a fallback — it was
+        # not resolved from a gvtest.yaml targets section.
+        self.default_target._is_fallback = True
+        # Track sub-testset files that have already been
+        # fanned out to their own targets, to prevent
+        # duplication when multiple parent targets import
+        # the same sub-testset.
+        self._fanned_out: set[str] = set()
         self.cpu_poll_interval: float = 0.1
         self.report_all: bool = report_all
         self.progress: bool = progress
@@ -406,6 +414,11 @@ class Runner():
             signal.signal(signal.SIGINT, self._orig_sigint)
             self._orig_sigint = None
 
+    @property
+    def _cli_targets_specified(self) -> bool:
+        """True when the user explicitly passed --target."""
+        return self.target_names != ['default']
+
     def add_testset(self, file: str) -> None:
         if not os.path.isabs(file):
             file = os.path.join(os.getcwd(), file)
@@ -420,6 +433,11 @@ class Runner():
                     self.import_testset(file, target, None)
                 )
         else:
+            # No YAML targets at this level — load with
+            # default target. The testset may import
+            # sub-testsets that DO define targets.
+            # Filtering of untargeted tests happens at
+            # enqueue time (see TestCommon.enqueue).
             self.testsets.append(
                 self.import_testset(
                     file, self.default_target, None

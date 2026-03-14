@@ -85,29 +85,31 @@ class TestsetImpl(testsuite.Testset):
         sub_dir = os.path.dirname(filepath)
 
         if self.runner._has_own_targets(sub_dir):
-            # Sub-dir defines its own targets.
-            sub_targets = (
-                self.runner._resolve_targets_for_dir(sub_dir)
-            )
-            sub_names = [t.name for t in sub_targets]
-            my_name = (
-                self.target.name
-                if hasattr(self.target, 'name')
-                else 'default'
-            )
-
-            if my_name == 'default' or my_name in sub_names:
-                # First parent to reach here, or parent's
-                # target matches: fan out to sub's targets
+            # Sub-dir defines its own targets — it owns
+            # its target scope independently of the parent.
+            # Use _fanned_out to ensure we only fan out
+            # once per sub-testset file (avoids duplication
+            # when multiple parent targets import the same
+            # sub-testset).
+            real_path = os.path.realpath(filepath)
+            if real_path not in self.runner._fanned_out:
+                self.runner._fanned_out.add(real_path)
+                sub_targets = (
+                    self.runner._resolve_targets_for_dir(
+                        sub_dir
+                    )
+                )
                 for target in sub_targets:
                     self.testsets.append(
                         self.runner.import_testset(
                             filepath, target, self
                         )
                     )
-            # else: parent's target not in sub's list → skip
         else:
-            # Inherit parent's target
+            # Inherit parent's target. If parent is
+            # "default" and --target was specified,
+            # the tests created inside will be filtered
+            # at enqueue time.
             self.testsets.append(
                 self.runner.import_testset(
                     filepath, self.target, self

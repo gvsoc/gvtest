@@ -247,6 +247,15 @@ class PytestTestset:
         # Collect active (non-skipped) tests
         active_tests: list[PytestTest] = []
         for test in self.tests:
+            config = (
+                test.target.name
+                if test.target is not None
+                else self.runner.get_config()
+            )
+            self.runner.count_test()
+            if self.runner.tui is not None:
+                self.runner.tui.count_target(config)
+
             if (self.runner.is_skipped(test.get_full_name())
                     or test.skipped is not None):
                 # Handle skipped tests

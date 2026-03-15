@@ -317,12 +317,14 @@ class CursesTUI:
         # Top area split: left 2/3, right 1/3
         progress_h = 3
         top_h = h - progress_h
-        left_w = w * 2 // 3
+        left_w = w // 2
         right_w = w - left_w
 
-        # Right side: running on top, targets on bottom
+        # Right side: running on top, targets on bottom.
+        # Show all targets, keep at least 3 rows for running
+        # (1 content + 2 border).
         n_targets = max(1, len(self.target_stats))
-        targets_h = min(n_targets + 2, top_h // 3)
+        targets_h = min(n_targets + 2, top_h - 3)
         running_h = top_h - targets_h
 
         with self.lock:

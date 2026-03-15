@@ -427,17 +427,30 @@ class TestCommon(object):
             else self.runner.get_config()
         )
 
-        # When --target is specified, skip tests whose target
-        # is just the fallback (not from a gvtest.yaml
-        # targets section). This ensures only tests
-        # belonging to a real target are executed.
-        if (self.runner._cli_targets_specified
-                and self.target is not None
-                and getattr(
-                    self.target, '_is_fallback', False
-                )):
-            # Don't count or show — silently excluded
-            return
+        # Target filtering when --target is specified:
+        is_fallback = (
+            self.target is not None
+            and getattr(self.target, '_is_fallback', False)
+        )
+        if self.runner._cli_targets_specified:
+            want_default = 'default' in self.runner.target_names
+            if is_fallback:
+                # Untargeted test — only run if 'default'
+                # is in the requested targets
+                if not want_default:
+                    return
+            else:
+                # Targeted test — only run if its target
+                # name is in the requested targets
+                target_name = (
+                    self.target.name
+                    if self.target is not None
+                    else None
+                )
+                if (target_name is not None
+                        and target_name
+                        not in self.runner.target_names):
+                    return
 
         self.runner.count_test()
         if self.runner.tui is not None:

@@ -131,6 +131,7 @@ class Runner():
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
         self.target_names: list[str] = targets if targets is not None else ['default']
+        self._cli_targets_explicit: bool = targets is not None
         self.platform: str = platform
         if targets is None:
             self.default_target: Target = Target('default')
@@ -417,7 +418,7 @@ class Runner():
     @property
     def _cli_targets_specified(self) -> bool:
         """True when the user explicitly passed --target."""
-        return self.target_names != ['default']
+        return self._cli_targets_explicit
 
     def add_testset(self, file: str) -> None:
         if not os.path.isabs(file):
@@ -480,10 +481,18 @@ class Runner():
             loader, '_targets_config_dir', None
         )
         targets: list[Target] = []
+        # Filter by --target names, but only filter out
+        # YAML targets that aren't requested. 'default'
+        # in target_names means "untargeted tests" and
+        # doesn't affect YAML target resolution.
+        cli_real_targets = (
+            [n for n in self.target_names if n != 'default']
+            if self._cli_targets_specified
+            else []
+        )
         for name, cfg in yaml_targets.items():
-            # If CLI specifies targets, filter
-            if (self.target_names != ['default']
-                    and name not in self.target_names):
+            if (cli_real_targets
+                    and name not in cli_real_targets):
                 continue
             t = Target.from_dict(name, cfg)
             t.config_dir = config_dir

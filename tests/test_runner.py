@@ -916,6 +916,86 @@ def testset_build(testset):
         # Both sub-testsets should run (1 test each)
         assert r.stats.stats['passed'] == 2
 
+    def test_target_default_runs_only_untargeted(
+        self, tmp_path
+    ):
+        """--target default should run only tests without
+        a target definition, skipping targeted tests."""
+        # Sub with real targets
+        sub = tmp_path / 'sub'
+        sub.mkdir()
+        (sub / 'gvtest.yaml').write_text(
+            'targets:\n  target_a: {}\n'
+        )
+        (sub / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('sub')
+    test = testset.new_test('targeted')
+    test.add_command(Shell('run', 'echo targeted'))
+''')
+        # Root with untargeted test + import of sub
+        root = tmp_path / 'testset.cfg'
+        root.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('root')
+    test = testset.new_test('untargeted')
+    test.add_command(Shell('run', 'echo untargeted'))
+    testset.import_testset('sub/testset.cfg')
+''')
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['default']
+        )
+        r.add_testset(str(root))
+        r.start()
+        r.run()
+        r.stop()
+        # Only the untargeted test should run
+        assert r.stats.stats['passed'] == 1
+
+    def test_target_default_and_named_together(
+        self, tmp_path
+    ):
+        """--target default --target X should run both
+        untargeted tests and tests for target X."""
+        sub = tmp_path / 'sub'
+        sub.mkdir()
+        (sub / 'gvtest.yaml').write_text(
+            'targets:\n  target_a: {}\n'
+        )
+        (sub / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('sub')
+    test = testset.new_test('targeted')
+    test.add_command(Shell('run', 'echo targeted'))
+''')
+        root = tmp_path / 'testset.cfg'
+        root.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('root')
+    test = testset.new_test('untargeted')
+    test.add_command(Shell('run', 'echo untargeted'))
+    testset.import_testset('sub/testset.cfg')
+''')
+        r = Runner(
+            properties=[], flags=[], nb_threads=1,
+            targets=['default', 'target_a']
+        )
+        r.add_testset(str(root))
+        r.start()
+        r.run()
+        r.stop()
+        # Both should run
+        assert r.stats.stats['passed'] == 2
+
     def test_no_cli_target_runs_all_yaml_targets(
         self, tmp_path
     ):

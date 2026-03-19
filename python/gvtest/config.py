@@ -151,7 +151,7 @@ class ConfigLoader:
             return  # Empty config is valid
         
         # Check for unknown keys
-        known_keys = {'python_paths', 'targets'}
+        known_keys = {'python_paths', 'targets', 'container'}
         unknown_keys = set(config.keys()) - known_keys
         if unknown_keys:
             logger.warning(
@@ -175,6 +175,19 @@ class ConfigLoader:
                         f"expected a string, got {type(path).__name__}"
                     )
         
+        # Validate container if present
+        if 'container' in config:
+            container = config['container']
+            if not isinstance(container, dict):
+                raise RuntimeError(
+                    f"Invalid 'container' in {config_file}: "
+                    f"expected a mapping, got {type(container).__name__}"
+                )
+            if 'image' not in container:
+                raise RuntimeError(
+                    f"'container' in {config_file} requires 'image'"
+                )
+
         # Validate targets if present
         if 'targets' in config:
             targets = config['targets']
@@ -324,6 +337,57 @@ class ConfigLoader:
             self.config_files = self.discover_configs()
         return self.resolve_targets(self.config_files)
     
+    def resolve_container(
+        self, config_files: List[Path]
+    ) -> Optional[Dict]:
+        """
+        Resolve container configuration from the hierarchy.
+
+        The most specific (leaf-most) config that defines a
+        ``container`` section wins. Container configs are NOT
+        merged across levels — the leaf definition fully
+        overrides any parent.
+
+        Args:
+            config_files: Config files in root → leaf order.
+
+        Returns:
+            Container config dict, or None if no config
+            defines a container section.
+        """
+        result: Optional[Dict] = None
+
+        for config_file in config_files:
+            try:
+                config = self.load_config(config_file)
+                self.validate_config(config, config_file)
+
+                if 'container' in config:
+                    result = config['container']
+                    logger.debug(
+                        f"Container config from "
+                        f"{config_file}: {result}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error processing {config_file}: {e}"
+                )
+                raise
+
+        return result
+
+    def get_container(self) -> Optional[Dict]:
+        """
+        Discover and resolve container config from
+        gvtest.yaml hierarchy.
+
+        Returns:
+            Container config dict, or None.
+        """
+        if not self.config_files:
+            self.config_files = self.discover_configs()
+        return self.resolve_container(self.config_files)
+
     def merge_configs(self, config_files: List[Path]) -> List[str]:
         """
         Load and merge all config files, collecting python_paths.
@@ -423,6 +487,25 @@ class ConfigLoader:
         initial_len = len(sys.path)
         self.apply_to_sys_path(python_paths)
         return len(sys.path) - initial_len
+
+
+def get_container_for_dir(directory: str) -> Optional[Dict]:
+    """
+    Get container configuration for a specific directory.
+
+    Discovers gvtest.yaml files from the specified directory
+    up to the filesystem root and returns the most specific
+    container config found.
+
+    Args:
+        directory: Directory to start config discovery from.
+
+    Returns:
+        Container config dict, or None.
+    """
+    loader = ConfigLoader(directory)
+    loader.config_files = loader.discover_configs()
+    return loader.resolve_container(loader.config_files)
 
 
 def get_python_paths_for_dir(directory: str) -> List[str]:

@@ -28,6 +28,7 @@ from typing import Any, Callable
 from rich.table import Table
 
 import gvtest.testsuite as testsuite
+from gvtest.container import ContainerConfig
 from gvtest.targets import Target
 from gvtest.pytest_integration import PytestTestset
 from gvtest.tests import (
@@ -50,6 +51,7 @@ class TestsetImpl(testsuite.Testset):
         self.parent: TestsetImpl | None = parent
         self.path: str | None = path
         self.target: Any | None = target
+        self.container: ContainerConfig | None = None
 
     def get_target(self) -> Any | None:
         return self.target
@@ -65,6 +67,67 @@ class TestsetImpl(testsuite.Testset):
 
     def set_name(self, name: str) -> None:
         self.name = name
+
+    def set_container(
+        self,
+        image: str | None = None,
+        runtime: str = 'docker',
+        volumes: dict[str, str] | None = None,
+        env: dict[str, str] | None = None,
+        options: list[str] | None = None,
+        setup: str | None = None,
+        workdir: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        """Set a container configuration for this testset.
+
+        All tests in this testset (and nested testsets
+        unless they override) will execute inside the
+        specified container.
+
+        Can be called with individual parameters::
+
+            testset.set_container(
+                image='ghcr.io/org/image:tag',
+                setup='pip install -e .',
+            )
+
+        Or with a dict (e.g. from gvtest.yaml)::
+
+            testset.set_container(
+                config={'image': '...', 'setup': '...'}
+            )
+        """
+        if config is not None:
+            self.container = ContainerConfig.from_dict(
+                config
+            )
+        elif image is not None:
+            self.container = ContainerConfig(
+                image=image,
+                runtime=runtime,
+                volumes=volumes,
+                env=env,
+                options=options,
+                setup=setup,
+                workdir=workdir,
+            )
+        else:
+            raise ValueError(
+                "set_container requires 'image' or 'config'"
+            )
+
+    def get_container(self) -> ContainerConfig | None:
+        """Return the effective container config.
+
+        Walks up the testset hierarchy: the nearest
+        ancestor (including self) with a container wins.
+        """
+        if self.container is not None:
+            return self.container
+        if self.parent is not None:
+            return self.parent.get_container()
+        return None
 
     def get_full_name(self) -> str | None:
         if self.parent is not None:

@@ -33,8 +33,8 @@ from __future__ import annotations
 import os
 import logging
 import signal
+import subprocess
 import sys
-import csv
 import queue
 import threading
 import time
@@ -100,7 +100,7 @@ class Runner():
             commands: list[str] | None = None,
             commands_exclude: list[str] | None = None,
             flags: list[str] | None = None,
-            bench_csv_file: str | None = None,
+            bench_db: str | None = None,
             bench_regexp: str | None = None,
             targets: list[str] | None = None,
             platform: str = 'gvsoc',
@@ -126,8 +126,8 @@ class Runner():
         self.commands_filter: list[str] | None = commands
         self.commands_exclude: list[str] | None = commands_exclude
         self.flags: list[str] = flags if flags is not None else []
-        self.bench_results: dict[str, list[Any]] = {}
-        self.bench_csv_file: str | None = bench_csv_file
+        self.bench_results: list[dict[str, Any]] = []
+        self.bench_db: str | None = bench_db
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
         self.target_names: list[str] = targets if targets is not None else ['default']
@@ -159,12 +159,6 @@ class Runner():
               self.properties[name] = value
 
 
-        if bench_csv_file is not None:
-            if os.path.exists(bench_csv_file):
-                with open(bench_csv_file, 'r') as file:
-                    csv_reader = csv.reader(file)
-                    for row in csv_reader:
-                        self.bench_results[row[0]] = row[1:]
 
     def get_active_targets(self) -> list[str]:
         return self.target_names
@@ -306,11 +300,16 @@ class Runner():
         for testset in self.testsets:
             self.stats.add_child_testset(testset)
 
-        if self.bench_csv_file is not None:
-            with open(self.bench_csv_file, 'w') as file:
-                csv_writer = csv.writer(file)
-                for key, value in self.bench_results.items():
-                    csv_writer.writerow([key] + value)
+        if self.bench_db is not None and self.bench_results:
+            from datetime import datetime as _dt, timezone as _tz
+            report = {
+                'timestamp': _dt.now(_tz.utc).isoformat(),
+                'git_commit': self._get_git_info('rev-parse', 'HEAD'),
+                'git_branch': self._get_git_info('rev-parse', '--abbrev-ref', 'HEAD'),
+                'platform': self.platform,
+                'results': self.bench_results,
+            }
+            self._write_bench_db(report)
 
 
 
@@ -642,5 +641,53 @@ class Runner():
 
         self.lock.release()
 
-    def register_bench_result(self, name: str, value: float, desc: str) -> None:
-        self.bench_results[name] = [value, desc]
+    def register_bench_result(
+        self, name: str, value: float, desc: str,
+        test_name: str = '', target: str = ''
+    ) -> None:
+        self.bench_results.append({
+            'name': name,
+            'value': value,
+            'desc': desc,
+            'test': test_name,
+            'target': target,
+        })
+
+    def _get_git_info(self, *args: str) -> str | None:
+        try:
+            return subprocess.check_output(
+                ['git'] + list(args),
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            return None
+
+    def _write_bench_db(self, report: dict[str, Any]) -> None:
+        from gvtest.bench.db import init_db
+        conn = init_db(self.bench_db)
+        cursor = conn.execute(
+            "INSERT INTO runs (timestamp, git_commit, git_branch, platform) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                report['timestamp'],
+                report.get('git_commit'),
+                report.get('git_branch'),
+                report.get('platform', 'unknown'),
+            )
+        )
+        run_id = cursor.lastrowid
+        for r in report.get('results', []):
+            conn.execute(
+                "INSERT OR IGNORE INTO results "
+                "(run_id, test, target, metric, value, description) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, r.get('test', ''), r.get('target', ''),
+                 r.get('name', ''), r.get('value', 0), r.get('desc', ''))
+            )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM results WHERE run_id = ?",
+            (run_id,)
+        ).fetchone()[0]
+        logging.info(f"Bench: inserted {count} result(s) into {self.bench_db}")
+        conn.close()

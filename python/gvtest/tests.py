@@ -158,7 +158,11 @@ class TestRun(object):
                     value = float(result.group(1))
                     name = bench[1]
                     desc = bench[2]
-                    self.runner.register_bench_result(name, value, desc)
+                    self.runner.register_bench_result(
+                        name, value, desc,
+                        test_name=self.test.get_full_name() or '',
+                        target=self.get_target_name(),
+                    )
 
 
         self.print_end_message()

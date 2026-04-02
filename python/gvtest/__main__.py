@@ -163,9 +163,9 @@ parser.add_argument(
     help="Specify regexp for extracting benchmark results"
 )
 parser.add_argument(
-    "--bench-csv-file", dest="bench_csv_file",
+    "--bench-db", dest="bench_db",
     default=None,
-    help="Specify CSV file for benchmark results"
+    help="Specify SQLite database for benchmark results"
 )
 parser.add_argument(
     "--no-fail", dest="no_fail", action="store_true",
@@ -197,7 +197,7 @@ try:
         commands=args.commands,
         commands_exclude=args.commands_exclude,
         flags=args.flags,
-        bench_csv_file=args.bench_csv_file,
+        bench_db=args.bench_db,
         bench_regexp=args.bench_regexp,
         targets=args.targets,
         platform=args.platform, report_all=args.all,

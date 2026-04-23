@@ -375,6 +375,7 @@ class TestCommon(object):
         self.status: str | None = None
         self.skipped: str | None = None
         self.description: str | None = None
+        self.components: list[str] | None = None
         if self.path == '':
             self.path = os.getcwd()
         self.current_proc: subprocess.Popen[bytes] | None = None
@@ -473,7 +474,13 @@ class TestCommon(object):
             self.runner.enqueue_test(run)
 
     def dump_tests(self, table: Table, indent: str, targets: list[str]) -> None:
-        table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
+        table.add_row(
+            indent + self.name,
+            self.get_full_name(),
+            ", ".join(targets),
+            ", ".join(self.get_components()),
+            self.description or '',
+        )
 
     # Can be called to get full name including hierarchy path
     def get_full_name(self) -> str | None:
@@ -485,6 +492,25 @@ class TestCommon(object):
 
     def add_description(self, description: str) -> None:
         self.description = description
+
+    def set_components(self, components: list[str]) -> None:
+        """Declare which components this test validates.
+
+        Components are identified by their dotted vp_model name
+        (e.g. "interco.router", "memory.memory"). Overrides any
+        components inherited from the enclosing testset.
+        """
+        self.components = list(components)
+
+    def get_components(self) -> list[str]:
+        """Return declared components, falling back to enclosing testset."""
+        if self.components is not None:
+            return self.components
+        if self.parent is not None:
+            getter = getattr(self.parent, 'get_components', None)
+            if getter is not None:
+                return getter()
+        return []
 
 
 class TestImpl(TestCommon, testsuite.Test):

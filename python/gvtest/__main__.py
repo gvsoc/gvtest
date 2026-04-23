@@ -42,6 +42,11 @@ def table(runner, args):
 def junit(runner, args):
     runner.dump_junit(args.junit_report_path)
 
+def catalog(runner, args):
+    from gvtest.catalog import dump_catalog
+    dump_catalog(runner, args.catalog_output,
+                 show_unclassified=args.show_unclassified)
+
 def all(runner, args):
     run(runner, args)
     table(runner, args)
@@ -54,6 +59,7 @@ commands = {
   'table'  : ['Dump a report using a table', table],
   'summary' : ['Dump summary', summary],
   'junit'  : ['Dump junit report', junit],
+  'catalog': ['Export test metadata as JSON', catalog],
   'all'  : ['Execute commands run table summary junit', all],
 }
 
@@ -171,6 +177,24 @@ parser.add_argument(
     "--no-fail", dest="no_fail", action="store_true",
     help="Return an error if there is any test failure"
 )
+parser.add_argument(
+    "--catalog-output", dest="catalog_output", default=None,
+    metavar="PATH",
+    help="Path to write the catalog JSON "
+    "(default: stdout). Used by the `catalog` command."
+)
+parser.add_argument(
+    "--show-unclassified", dest="show_unclassified",
+    action="store_true",
+    help="When exporting the catalog, list tests with no declared "
+    "components so coverage gaps are visible."
+)
+parser.add_argument(
+    "--tolerate-missing", dest="tolerate_missing",
+    action="store_true",
+    help="Warn and continue when an imported testset file is missing "
+    "(useful with partial checkouts when exporting the catalog)."
+)
 
 
 args = parser.parse_args()
@@ -201,7 +225,8 @@ try:
         bench_regexp=args.bench_regexp,
         targets=args.targets,
         platform=args.platform, report_all=args.all,
-        progress=not args.no_progress
+        progress=not args.no_progress,
+        tolerate_missing=args.tolerate_missing,
     )
 
     for testset in args.testset:

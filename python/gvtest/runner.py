@@ -105,7 +105,8 @@ class Runner():
             targets: list[str] | None = None,
             platform: str = 'gvsoc',
             report_all: bool = False,
-            progress: bool = False
+            progress: bool = False,
+            tolerate_missing: bool = False
     ) -> None:
         self.nb_threads: int = nb_threads
         self.queue: queue.Queue[TestRun | None] = queue.Queue()
@@ -148,6 +149,7 @@ class Runner():
         self.cpu_poll_interval: float = 0.1
         self.report_all: bool = report_all
         self.progress: bool = progress
+        self.tolerate_missing: bool = tolerate_missing
         self.live_display: Any = None
         self.tui: Any = None
         self.stats: TestsetStats = TestsetStats()
@@ -193,6 +195,8 @@ class Runner():
         table.add_column('Name')
         table.add_column('Path')
         table.add_column('Targets')
+        table.add_column('Components')
+        table.add_column('Description')
 
         for testset in self.testsets:
             testset.dump_tests(table)
@@ -542,7 +546,23 @@ class Runner():
             testset: TestsetImpl = TestsetImpl(self, target, parent, path=os.path.dirname(file))
             module.testset_build(testset)
         except FileNotFoundError as exc:
+            if self.tolerate_missing:
+                logging.warning(
+                    f"skipping missing testset file: {file}"
+                )
+                # Return an empty placeholder so parents don't crash on
+                # later attribute access; it carries no tests.
+                return TestsetImpl(self, target, parent,
+                                   path=os.path.dirname(file))
             raise RuntimeError('Unable to open test configuration file: ' + file)
+        except Exception as exc:
+            if self.tolerate_missing:
+                logging.warning(
+                    f"skipping testset {file}: {type(exc).__name__}: {exc}"
+                )
+                return TestsetImpl(self, target, parent,
+                                   path=os.path.dirname(file))
+            raise
         finally:
             # Restore original sys.path to maintain isolation between testsets
             # Imported modules remain available via sys.modules cache

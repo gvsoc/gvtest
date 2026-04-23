@@ -69,6 +69,12 @@ class Test(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def depends_on(self, *tests: Test) -> None: pass
 
+    # Note: set_components() is intentionally not declared here (abstract
+    # or concrete). It lives on TestCommon only, so concrete subclasses
+    # using multiple inheritance like GvrunTestImpl(SdkTest, TestCommon)
+    # resolve the method via TestCommon rather than shadowing it with a
+    # no-op stub earlier in the MRO.
+
 
 
 class Testset(object, metaclass=abc.ABCMeta):
@@ -108,9 +114,15 @@ class Testset(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_path(self) -> str | None: pass
 
+    # Note: set_components() lives on TestsetImpl; see Test.set_components
+    # note above.
+
 
 
 class SdkTest(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def add_bench(self, extract: str, name: str, desc: str) -> None: pass
+
+    # Note: set_components() lives on TestCommon; see Test.set_components
+    # note above.

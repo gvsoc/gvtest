@@ -50,6 +50,7 @@ class TestsetImpl(testsuite.Testset):
         self.parent: TestsetImpl | None = parent
         self.path: str | None = path
         self.target: Any | None = target
+        self.components: list[str] | None = None
 
     def get_target(self) -> Any | None:
         return self.target
@@ -65,6 +66,25 @@ class TestsetImpl(testsuite.Testset):
 
     def set_name(self, name: str) -> None:
         self.name = name
+
+    def set_components(self, components: list[str]) -> None:
+        """Tag all tests in this testset with the given components.
+
+        Components are identified by their dotted vp_model name
+        (e.g. "interco.router"). Inherited by child tests and
+        nested testsets unless overridden.
+        """
+        self.components = list(components)
+
+    def get_components(self) -> list[str]:
+        """Return declared components, falling back to parent testset."""
+        if self.components is not None:
+            return self.components
+        if self.parent is not None:
+            getter = getattr(self.parent, 'get_components', None)
+            if getter is not None:
+                return getter()
+        return []
 
     def get_full_name(self) -> str | None:
         if self.parent is not None:
@@ -140,7 +160,13 @@ class TestsetImpl(testsuite.Testset):
         targets: list[str] = list(parent_targets)
 
         if self.name is not None:
-            table.add_row(indent + self.name, self.get_full_name(), ", ".join(targets))
+            table.add_row(
+                indent + self.name,
+                self.get_full_name(),
+                ", ".join(targets),
+                ", ".join(self.get_components()),
+                '',
+            )
             indent += '  '
 
         for testset in self.testsets:

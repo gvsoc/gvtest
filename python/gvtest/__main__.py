@@ -195,6 +195,14 @@ parser.add_argument(
     help="Warn and continue when an imported testset file is missing "
     "(useful with partial checkouts when exporting the catalog)."
 )
+parser.add_argument(
+    "--resource", dest="resources", action="append",
+    default=None, metavar="NAME[:CAPACITY]",
+    help="Declare a shared resource with the given capacity "
+    "(default 1). Commands in testset.cfg referencing this "
+    "resource are serialized up to that many concurrent "
+    "holders. Repeatable."
+)
 
 
 args = parser.parse_args()
@@ -227,6 +235,7 @@ try:
         platform=args.platform, report_all=args.all,
         progress=not args.no_progress,
         tolerate_missing=args.tolerate_missing,
+        resources=args.resources,
     )
 
     for testset in args.testset:

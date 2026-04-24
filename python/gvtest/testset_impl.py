@@ -222,6 +222,52 @@ class TestsetImpl(testsuite.Testset):
         pt.discover()
         self.testsets.append(pt)
 
+    def declare_resource(
+        self, name: str, capacity: int = 1
+    ) -> None:
+        """Declare a shared resource usable by this testset's commands.
+
+        Thin pass-through to `Runner.declare_resource`. Resources live
+        on the Runner (one registry for the whole run), so a top-level
+        testset may declare once and sub-testsets can freely reference
+        the same name.
+        """
+        self.runner.declare_resource(name, capacity)
+
+    def _apply_no_clean(
+        self, test: TestCommon, no_clean: bool
+    ) -> None:
+        """Drop the auto-generated `clean` command from a test.
+
+        Useful for shared-build tests where a legacy Makefile's clean
+        recipe would wipe the shared tree, and where the per-run work
+        dir is re-created on each run anyway.
+        """
+        if not no_clean:
+            return
+        test.commands = [
+            c for c in test.commands
+            if getattr(c, 'name', None) != 'clean'
+        ]
+
+    def _annotate_build_resource(
+        self, test: TestCommon, build_resource: str | None
+    ) -> None:
+        """Attach a resource lock to the auto-generated clean/build
+        commands of a test factory.
+
+        The `run` and `check` commands (if any) are left untouched so
+        they remain free to execute in parallel across tests.
+        """
+        if build_resource is None:
+            return
+        for cmd in test.commands:
+            if getattr(cmd, 'name', None) in ('clean', 'build'):
+                existing = list(cmd.resources or [])
+                if build_resource not in existing:
+                    existing.append(build_resource)
+                cmd.resources = existing
+
     def new_test(self, name: str) -> TestImpl:
         test: TestImpl = TestImpl(self.runner, self, name, self.target, self.path)
         if self.runner.is_selected(test):
@@ -232,13 +278,17 @@ class TestsetImpl(testsuite.Testset):
     def new_gvrun_test(
         self, name: str, flags: str = '',
         checker: Callable[..., Any] | None = None,
-        retval: int = 0
+        retval: int = 0,
+        build_resource: str | None = None,
+        no_clean: bool = False
     ) -> GvrunTestImpl:
         test: GvrunTestImpl = GvrunTestImpl(
             self.runner, self, name, self.target,
             self.path, flags, checker=checker,
             retval=retval
         )
+        self._apply_no_clean(test, no_clean)
+        self._annotate_build_resource(test, build_resource)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
@@ -246,13 +296,17 @@ class TestsetImpl(testsuite.Testset):
     def new_make_test(
         self, name: str, flags: str = '',
         checker: Callable[..., Any] | None = None,
-        retval: int = 0, path: str | None = None
+        retval: int = 0, path: str | None = None,
+        build_resource: str | None = None,
+        no_clean: bool = False
     ) -> MakeTestImpl:
         test: MakeTestImpl = MakeTestImpl(
             self.runner, self, name, self.target,
             self.path if path is None else path,
             flags, checker=checker, retval=retval
         )
+        self._apply_no_clean(test, no_clean)
+        self._annotate_build_resource(test, build_resource)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test
@@ -260,13 +314,17 @@ class TestsetImpl(testsuite.Testset):
     def new_sdk_test(
         self, name: str, flags: str | None = None,
         checker: Callable[..., Any] | None = None,
-        retval: int = 0
+        retval: int = 0,
+        build_resource: str | None = None,
+        no_clean: bool = False
     ) -> SdkTestImpl:
         test: SdkTestImpl = SdkTestImpl(
             self.runner, self, name, self.target,
             self.path, flags, checker=checker,
             retval=retval
         )
+        self._apply_no_clean(test, no_clean)
+        self._annotate_build_resource(test, build_resource)
         if self.runner.is_selected(test):
             self.tests.append(test)
         return test

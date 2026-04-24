@@ -107,37 +107,63 @@ class TestRun(object):
             timer = Timer(timeout, self.kill)
             timer.start()
 
-        for command in self.test.commands:
+        # Resources currently held by this TestRun. Commands
+        # can declare `resources=[...]`; the worker holds each
+        # resource only as long as it is listed by consecutive
+        # commands, so e.g. `clean` and `build` can share one
+        # lock without releasing between them.
+        held: set[str] = set()
+        try:
+            for command in self.test.commands:
 
-            # Apply --cmd / --cmd-exclude filters
-            cmd_name: str | None = getattr(command, 'name', None)
-            if cmd_name is not None:
-                if self.runner.commands_filter is not None:
-                    if cmd_name not in self.runner.commands_filter:
-                        continue
-                if self.runner.commands_exclude is not None:
-                    if cmd_name in self.runner.commands_exclude:
-                        continue
+                # Apply --cmd / --cmd-exclude filters
+                cmd_name: str | None = getattr(command, 'name', None)
+                if cmd_name is not None:
+                    if self.runner.commands_filter is not None:
+                        if cmd_name not in self.runner.commands_filter:
+                            continue
+                    if self.runner.commands_exclude is not None:
+                        if cmd_name in self.runner.commands_exclude:
+                            continue
 
-            retval: int = self.__exec_command(
-                command, self.target,
-                self.sourceme, self.envvars
-            )
-
-            if self.runner._interrupted:
-                self.__dump_test_msg(
-                    '--- Interrupted ---\n'
+                # Resource hand-off: release what the next
+                # command no longer needs, acquire what it
+                # newly needs. Sorted order gives a consistent
+                # global acquisition order and prevents
+                # deadlocks when multiple resources are used.
+                want: set[str] = set(
+                    getattr(command, 'resources', None) or ()
                 )
-                self.status = "failed"
-                break
+                for r in sorted(held - want):
+                    self.runner.release_resource(r)
+                    held.discard(r)
+                for r in sorted(want - held):
+                    self.runner.acquire_resource(r)
+                    held.add(r)
 
-            if retval != 0 or self.timeout_reached:
-                if self.timeout_reached:
+                retval: int = self.__exec_command(
+                    command, self.target,
+                    self.sourceme, self.envvars
+                )
+
+                if self.runner._interrupted:
                     self.__dump_test_msg(
-                        '--- Timeout reached ---\n'
+                        '--- Interrupted ---\n'
                     )
-                self.status = "failed"
-                break
+                    self.status = "failed"
+                    break
+
+                if retval != 0 or self.timeout_reached:
+                    if self.timeout_reached:
+                        self.__dump_test_msg(
+                            '--- Timeout reached ---\n'
+                        )
+                    self.status = "failed"
+                    break
+        finally:
+            for r in sorted(held):
+                self.runner.release_resource(r)
+            held.clear()
 
         if timeout != -1 and timer is not None:
             timer.cancel()

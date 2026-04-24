@@ -106,7 +106,8 @@ class Runner():
             platform: str = 'gvsoc',
             report_all: bool = False,
             progress: bool = False,
-            tolerate_missing: bool = False
+            tolerate_missing: bool = False,
+            resources: list[str] | None = None
     ) -> None:
         self.nb_threads: int = nb_threads
         self.queue: queue.Queue[TestRun | None] = queue.Queue()
@@ -159,6 +160,29 @@ class Runner():
             for prop in properties:
               name, value = prop.split('=')
               self.properties[name] = value
+
+        # Resource registry — named semaphores used by
+        # Command.resources to serialize selected commands
+        # across parallel TestRuns. Lazy creation: the first
+        # acquire of an undeclared resource creates a
+        # Semaphore(1) on the fly.
+        self._resources: dict[
+            str, tuple[threading.Semaphore, int]
+        ] = {}
+        self._resources_lock: threading.Lock = threading.Lock()
+        if resources is not None:
+            for spec in resources:
+                if ':' in spec:
+                    name, _, cap_str = spec.partition(':')
+                    try:
+                        capacity = int(cap_str)
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid --resource capacity: {spec!r}"
+                        )
+                else:
+                    name, capacity = spec, 1
+                self.declare_resource(name, capacity)
 
 
 
@@ -660,6 +684,58 @@ class Runner():
             self.event.set()
 
         self.lock.release()
+
+    def declare_resource(
+        self, name: str, capacity: int = 1
+    ) -> None:
+        """Declare a named resource with a given capacity.
+
+        Re-declaring with the same capacity is a no-op. Re-declaring
+        with a different capacity raises, since capacities are fixed
+        once any test has acquired the resource.
+        """
+        if capacity < 1:
+            raise ValueError(
+                f"Resource {name!r} capacity must be >= 1, "
+                f"got {capacity}"
+            )
+        with self._resources_lock:
+            existing = self._resources.get(name)
+            if existing is not None:
+                _, existing_cap = existing
+                if existing_cap != capacity:
+                    raise ValueError(
+                        f"Resource {name!r} already declared with "
+                        f"capacity {existing_cap}, cannot redeclare "
+                        f"with capacity {capacity}"
+                    )
+                return
+            self._resources[name] = (
+                threading.Semaphore(capacity), capacity
+            )
+
+    def acquire_resource(self, name: str) -> None:
+        """Acquire a named resource, blocking until available.
+
+        Lazily creates a capacity-1 semaphore if the resource was
+        not previously declared.
+        """
+        with self._resources_lock:
+            entry = self._resources.get(name)
+            if entry is None:
+                entry = (threading.Semaphore(1), 1)
+                self._resources[name] = entry
+            sem = entry[0]
+        sem.acquire()
+
+    def release_resource(self, name: str) -> None:
+        """Release a previously-acquired named resource."""
+        with self._resources_lock:
+            entry = self._resources.get(name)
+        if entry is None:
+            # Should not happen in well-formed code; be defensive.
+            return
+        entry[0].release()
 
     def register_bench_result(
         self, name: str, value: float, desc: str,

@@ -1312,3 +1312,254 @@ def testset_build(testset):
         # All pending tests should have been dropped
         assert len(r.pending_tests) == 0
         assert r.nb_pending_tests == 0
+
+
+# ---------------------------------------------------------------------------
+# Resource locks (per-command serialization)
+# ---------------------------------------------------------------------------
+
+class TestResources:
+    """Tests for Command.resources / Runner resource registry."""
+
+    def test_command_resources_default_none(self):
+        assert Shell('a', 'echo').resources is None
+        assert Call('a', lambda: 0).resources is None
+        assert Checker('a', lambda *a, **k: (True, None)).resources is None
+
+    def test_command_resources_stored(self):
+        s = Shell('a', 'echo', resources=['r1', 'r2'])
+        assert s.resources == ['r1', 'r2']
+
+    def test_declare_resource_default_capacity(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('build')
+        entry = r._resources['build']
+        assert entry[1] == 1
+
+    def test_declare_resource_custom_capacity(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('build', capacity=4)
+        assert r._resources['build'][1] == 4
+
+    def test_declare_resource_idempotent(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('build', capacity=2)
+        r.declare_resource('build', capacity=2)
+        assert r._resources['build'][1] == 2
+
+    def test_declare_resource_mismatch_raises(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('build', capacity=1)
+        with pytest.raises(ValueError):
+            r.declare_resource('build', capacity=2)
+
+    def test_declare_resource_invalid_capacity(self):
+        r = Runner(properties=[], flags=[])
+        with pytest.raises(ValueError):
+            r.declare_resource('build', capacity=0)
+
+    def test_acquire_undeclared_creates_semaphore(self):
+        r = Runner(properties=[], flags=[])
+        r.acquire_resource('adhoc')
+        assert 'adhoc' in r._resources
+        assert r._resources['adhoc'][1] == 1
+        r.release_resource('adhoc')
+
+    def test_resource_serializes_acquirers(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('lock', capacity=1)
+        r.acquire_resource('lock')
+        # Second acquire from another thread must block until
+        # the first releases.
+        acquired = threading.Event()
+
+        def grab():
+            r.acquire_resource('lock')
+            acquired.set()
+            r.release_resource('lock')
+
+        t = threading.Thread(target=grab, daemon=True)
+        t.start()
+        # Give the other thread a chance to reach acquire
+        assert not acquired.wait(timeout=0.2)
+        r.release_resource('lock')
+        assert acquired.wait(timeout=2.0)
+        t.join(timeout=2.0)
+
+    def test_resource_capacity_n(self):
+        r = Runner(properties=[], flags=[])
+        r.declare_resource('pool', capacity=2)
+        r.acquire_resource('pool')
+        r.acquire_resource('pool')
+        # Third acquire must block
+        blocked = threading.Event()
+        released = threading.Event()
+
+        def grab():
+            r.acquire_resource('pool')
+            released.set()
+            r.release_resource('pool')
+
+        t = threading.Thread(target=grab, daemon=True)
+        t.start()
+        assert not released.wait(timeout=0.2)
+        r.release_resource('pool')
+        assert released.wait(timeout=2.0)
+        r.release_resource('pool')
+        t.join(timeout=2.0)
+
+    def test_cli_resource_spec_parsing(self, tmp_path):
+        r = Runner(properties=[], flags=[],
+                   resources=['build', 'io:4'])
+        assert r._resources['build'][1] == 1
+        assert r._resources['io'][1] == 4
+
+    def test_cli_resource_spec_invalid(self):
+        with pytest.raises(ValueError):
+            Runner(properties=[], flags=[],
+                   resources=['bad:notanint'])
+
+    def test_build_resource_sugar_make(self, tmp_path):
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('make')
+    testset.new_make_test('t1', flags="X=1",
+                          build_resource='shared.build')
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            test = r.testsets[0].tests[0]
+            names = [c.name for c in test.commands]
+            assert names[0] == 'clean'
+            assert names[1] == 'build'
+            assert test.commands[0].resources == ['shared.build']
+            assert test.commands[1].resources == ['shared.build']
+            # run / check are untouched
+            assert test.commands[2].name == 'run'
+            assert test.commands[2].resources is None
+        finally:
+            r.stop()
+
+    def test_no_clean_drops_clean_command(self, tmp_path):
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('no_clean')
+    testset.new_make_test('with_clean', flags="")
+    testset.new_make_test('without_clean', flags="", no_clean=True)
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            tests = {t.name: t for t in r.testsets[0].tests}
+            with_clean_cmds = [
+                c.name for c in tests['with_clean'].commands
+            ]
+            assert with_clean_cmds[0] == 'clean'
+            assert 'clean' in with_clean_cmds
+            without_clean_cmds = [
+                c.name for c in tests['without_clean'].commands
+            ]
+            assert 'clean' not in without_clean_cmds
+            assert without_clean_cmds[0] == 'build'
+            assert without_clean_cmds[1] == 'run'
+        finally:
+            r.stop()
+
+    def test_declare_resource_shared_across_testsets(
+            self, tmp_path):
+        sub_dir = tmp_path / 'sub'
+        sub_dir.mkdir()
+        (sub_dir / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('sub')
+    testset.new_make_test('t', flags="",
+                          build_resource='global.build')
+''')
+        (tmp_path / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('top')
+    testset.declare_resource('global.build', capacity=1)
+    testset.import_testset('sub/testset.cfg')
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(tmp_path / 'testset.cfg'))
+        r.start()
+        try:
+            # Resource declared at top is visible to sub's test
+            assert 'global.build' in r._resources
+            sub_test = r.testsets[0].testsets[0].tests[0]
+            assert sub_test.commands[0].resources == [
+                'global.build'
+            ]
+        finally:
+            r.stop()
+
+    def test_testrun_holds_and_releases(self, tmp_path):
+        """End-to-end: two serialized commands must not overlap."""
+        import time
+        marker = tmp_path / 'marker'
+        marker.write_text('0')
+        testset_file = tmp_path / 'testset.cfg'
+        # Two tests, each runs a shell that increments a
+        # counter, sleeps, then checks the counter is still
+        # its own value. If the resource is honored, the two
+        # critical sections never overlap.
+        testset_file.write_text(f'''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('ser')
+    for i in range(2):
+        t = testset.new_test(f'x{{i}}')
+        t.add_command(Shell('run',
+            'flock -xn {marker}.lock -c "sleep 0.5" '
+            '|| (echo CONTENDED; exit 1)',
+            resources=['lock']))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=4)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            r.run()
+        finally:
+            r.stop()
+        # Both tests must pass: the semaphore prevents two
+        # workers from holding the flock concurrently
+        passed = r.stats.stats['passed']
+        failed = r.stats.stats['failed']
+        assert passed == 2, (
+            f"expected 2 passed, got passed={passed}, "
+            f"failed={failed}"
+        )
+
+    def test_resource_released_on_failure(self, tmp_path):
+        """A failing command must still release its resource."""
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('rel')
+    t1 = testset.new_test('fail')
+    t1.add_command(Shell('run', 'false', resources=['x']))
+    t2 = testset.new_test('ok')
+    t2.add_command(Shell('run', 'true', resources=['x']))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            r.run()
+        finally:
+            r.stop()
+        # t1 fails, t2 passes; if the resource leaked t2
+        # would deadlock and the whole run would hang.
+        assert r.stats.stats['failed'] == 1
+        assert r.stats.stats['passed'] == 1

@@ -450,38 +450,38 @@ class TestCommon(object):
         return True
 
 
+    def _is_filtered_by_cli_target(self) -> bool:
+        """True when --target filters rule this test out.
+
+        An untargeted test (fallback target) only survives if the CLI
+        list contains 'default'. A targeted test only survives if the
+        CLI list contains its own target name.
+        """
+        if not self.runner._cli_targets_specified:
+            return False
+        is_fallback = (
+            self.target is not None
+            and getattr(self.target, '_is_fallback', False)
+        )
+        if is_fallback:
+            return 'default' not in self.runner.target_names
+        target_name = (
+            self.target.name if self.target is not None else None
+        )
+        if target_name is None:
+            return False
+        return target_name not in self.runner.target_names
+
     # Called by runner to enqueue this test to the list of tests ready to be executed
     def enqueue(self) -> None:
+        if self._is_filtered_by_cli_target():
+            return
+
         run: TestRun = TestRun(self, self.target)
         config = (
             self.target.name if self.target is not None
             else self.runner.get_config()
         )
-
-        # Target filtering when --target is specified:
-        is_fallback = (
-            self.target is not None
-            and getattr(self.target, '_is_fallback', False)
-        )
-        if self.runner._cli_targets_specified:
-            want_default = 'default' in self.runner.target_names
-            if is_fallback:
-                # Untargeted test — only run if 'default'
-                # is in the requested targets
-                if not want_default:
-                    return
-            else:
-                # Targeted test — only run if its target
-                # name is in the requested targets
-                target_name = (
-                    self.target.name
-                    if self.target is not None
-                    else None
-                )
-                if (target_name is not None
-                        and target_name
-                        not in self.runner.target_names):
-                    return
 
         self.runner.count_test()
         if self.runner.tui is not None:
@@ -499,14 +499,25 @@ class TestCommon(object):
             self.runs.append(run)
             self.runner.enqueue_test(run)
 
-    def dump_tests(self, table: Table, indent: str, targets: list[str]) -> None:
-        table.add_row(
-            indent + self.name,
-            self.get_full_name(),
-            ", ".join(targets),
-            ", ".join(self.get_components()),
-            self.description or '',
-        )
+    def dump_tests(self, rows: dict[str, dict], indent_level: int) -> None:
+        if self._is_filtered_by_cli_target():
+            return
+        key = self.get_full_name() or self.name
+        entry = rows.get(key)
+        if entry is None:
+            entry = {
+                'name': self.name,
+                'full_name': self.get_full_name() or '',
+                'indent_level': indent_level,
+                'targets': [],
+                'components': list(self.get_components()),
+                'description': self.description or '',
+            }
+            rows[key] = entry
+        if self.target is not None:
+            tname = self.target.name
+            if tname and tname not in entry['targets']:
+                entry['targets'].append(tname)
 
     # Can be called to get full name including hierarchy path
     def get_full_name(self) -> str | None:

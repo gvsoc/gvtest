@@ -135,12 +135,11 @@ class Runner():
         self.target_names: list[str] = targets if targets is not None else ['default']
         self._cli_targets_explicit: bool = targets is not None
         self.platform: str = platform
-        if targets is None:
-            self.default_target: Target = Target('default')
-        else:
-            self.default_target = Target(self.target_names[0])
-        # Mark the default target as a fallback — it was
-        # not resolved from a gvtest.yaml targets section.
+        # Fallback target for tests that aren't attached to any
+        # gvtest.yaml-declared target. Always named 'default' so
+        # they report under a neutral label; using the first
+        # --target would falsely label them as belonging to it.
+        self.default_target: Target = Target('default')
         self.default_target._is_fallback = True
         # Track sub-testset files that have already been
         # fanned out to their own targets, to prevent
@@ -215,6 +214,11 @@ class Runner():
         return False
 
     def tests(self) -> None:
+        from collections import OrderedDict
+        rows: OrderedDict[str, dict] = OrderedDict()
+        for testset in self.testsets:
+            testset.dump_tests(rows)
+
         table = rich.table.Table(title=f'tests', title_justify="left")
         table.add_column('Name')
         table.add_column('Path')
@@ -222,8 +226,14 @@ class Runner():
         table.add_column('Components')
         table.add_column('Description')
 
-        for testset in self.testsets:
-            testset.dump_tests(table)
+        for entry in rows.values():
+            table.add_row(
+                '  ' * entry['indent_level'] + entry['name'],
+                entry['full_name'],
+                ', '.join(entry['targets']),
+                ', '.join(entry['components']),
+                entry['description'],
+            )
 
         print()
         rich.print(table)

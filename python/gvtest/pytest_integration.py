@@ -223,21 +223,26 @@ class PytestTestset:
         return ':'.join(components)
 
     def dump_tests(
-        self, table: Any, indent: str = '',
-        parent_targets: list[str] = []
+        self, rows: dict[str, dict], indent_level: int = 0
     ) -> None:
-        targets = list(parent_targets)
-        if self.target is not None and hasattr(
-            self.target, 'name'
-        ):
-            targets = [self.target.name]
-        table.add_row(
-            indent + self.name,
-            self.get_full_name() or '',
-            ", ".join(targets)
-        )
+        key = self.get_full_name() or self.name
+        entry = rows.get(key)
+        if entry is None:
+            entry = {
+                'name': self.name,
+                'full_name': self.get_full_name() or '',
+                'indent_level': indent_level,
+                'targets': [],
+                'components': [],
+                'description': '',
+            }
+            rows[key] = entry
+        if self.target is not None and hasattr(self.target, 'name'):
+            tname = self.target.name
+            if tname and tname not in entry['targets']:
+                entry['targets'].append(tname)
         for test in self.tests:
-            test.dump_tests(table, indent + '  ', targets)
+            test.dump_tests(rows, indent_level + 1)
 
     def enqueue(self) -> None:
         """Enqueue all pytest tests and run the batch."""

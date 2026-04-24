@@ -155,26 +155,52 @@ class TestsetImpl(testsuite.Testset):
 
         return testset
 
-    def dump_tests(self, table: Table, indent: str = '', parent_targets: list[str] = []) -> None:
+    def _has_visible_descendants(self) -> bool:
+        """True if any test in this subtree survives --target filtering."""
+        for testset in self.testsets:
+            if testset._has_visible_descendants():
+                return True
+        for test in self.tests:
+            if not test._is_filtered_by_cli_target():
+                return True
+        return False
 
-        targets: list[str] = list(parent_targets)
+    def _display_target(self) -> str:
+        return self.target.name if self.target is not None else ''
+
+    def dump_tests(self, rows: dict[str, dict], indent_level: int = 0) -> None:
+        """Collect this testset's rows into ``rows``.
+
+        Rows are keyed by full_name so fan-out instances of the same
+        logical testset/test merge: their target names accumulate in
+        one row's targets list instead of producing duplicate rows.
+        """
+        if not self._has_visible_descendants():
+            return
 
         if self.name is not None:
-            table.add_row(
-                indent + self.name,
-                self.get_full_name(),
-                ", ".join(targets),
-                ", ".join(self.get_components()),
-                '',
-            )
-            indent += '  '
+            key = self.get_full_name() or self.name
+            entry = rows.get(key)
+            if entry is None:
+                entry = {
+                    'name': self.name,
+                    'full_name': self.get_full_name() or '',
+                    'indent_level': indent_level,
+                    'targets': [],
+                    'components': list(self.get_components()),
+                    'description': '',
+                }
+                rows[key] = entry
+            own_target = self._display_target()
+            if own_target and own_target not in entry['targets']:
+                entry['targets'].append(own_target)
+            indent_level += 1
 
         for testset in self.testsets:
-            testset.dump_tests(table, indent, targets)
+            testset.dump_tests(rows, indent_level)
 
-        if len(self.tests) > 0:
-            for test in self.tests:
-                test.dump_tests(table, indent, targets)
+        for test in self.tests:
+            test.dump_tests(rows, indent_level)
 
 
     def enqueue(self) -> None:

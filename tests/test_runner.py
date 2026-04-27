@@ -1334,18 +1334,18 @@ class TestResources:
         r = Runner(properties=[], flags=[])
         r.declare_resource('build')
         entry = r._resources['build']
-        assert entry[1] == 1
+        assert entry.capacity == 1
 
     def test_declare_resource_custom_capacity(self):
         r = Runner(properties=[], flags=[])
         r.declare_resource('build', capacity=4)
-        assert r._resources['build'][1] == 4
+        assert r._resources['build'].capacity == 4
 
     def test_declare_resource_idempotent(self):
         r = Runner(properties=[], flags=[])
         r.declare_resource('build', capacity=2)
         r.declare_resource('build', capacity=2)
-        assert r._resources['build'][1] == 2
+        assert r._resources['build'].capacity == 2
 
     def test_declare_resource_mismatch_raises(self):
         r = Runner(properties=[], flags=[])
@@ -1358,11 +1358,11 @@ class TestResources:
         with pytest.raises(ValueError):
             r.declare_resource('build', capacity=0)
 
-    def test_acquire_undeclared_creates_semaphore(self):
+    def test_acquire_undeclared_creates_resource(self):
         r = Runner(properties=[], flags=[])
         r.acquire_resource('adhoc')
         assert 'adhoc' in r._resources
-        assert r._resources['adhoc'][1] == 1
+        assert r._resources['adhoc'].capacity == 1
         r.release_resource('adhoc')
 
     def test_resource_serializes_acquirers(self):
@@ -1411,8 +1411,8 @@ class TestResources:
     def test_cli_resource_spec_parsing(self, tmp_path):
         r = Runner(properties=[], flags=[],
                    resources=['build', 'io:4'])
-        assert r._resources['build'][1] == 1
-        assert r._resources['io'][1] == 4
+        assert r._resources['build'].capacity == 1
+        assert r._resources['io'].capacity == 4
 
     def test_cli_resource_spec_invalid(self):
         with pytest.raises(ValueError):
@@ -1563,3 +1563,354 @@ def testset_build(testset):
         # would deadlock and the whole run would hang.
         assert r.stats.stats['failed'] == 1
         assert r.stats.stats['passed'] == 1
+
+
+# ---------------------------------------------------------------------------
+# Resource scheduling — gating and ASAP hand-off
+# ---------------------------------------------------------------------------
+
+class TestResourceScheduling:
+    """Tests for the dispatch-time resource gate and the
+    release-time hand-off that promotes a parked test directly
+    onto the worker queue."""
+
+    def test_dispatcher_pre_claims_for_resource_test(self, tmp_path):
+        """When a test is dispatched, the resources it needs are
+        already claimed (in_use incremented) and recorded on the
+        TestRun so the worker's first acquire is a no-op."""
+        from gvtest.runner import _Resource
+        testset_file = tmp_path / 'testset.cfg'
+        # Single capacity-1 test that sleeps long enough for us to
+        # observe the in-flight state.
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('s')
+    t = testset.new_test('hold')
+    t.add_command(Shell('run', 'sleep 0.5', resources=['lock']))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.declare_resource('lock', capacity=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            r.run()
+        finally:
+            r.stop()
+        # After the test finishes, in_use must be back to 0 and no
+        # waiters remain. (Mid-run we'd see in_use=1, but the test
+        # has finished by the time r.run() returns.)
+        assert r._resources['lock'].in_use == 0
+        assert len(r._resources['lock'].waiters) == 0
+
+    def test_blocked_test_parks_not_queues(self, tmp_path):
+        """When a resource is full, the second test must park on
+        the resource's waiters list rather than going to the worker
+        queue (where it would block a worker)."""
+        # Pre-claim 'lock' from the test thread so the dispatcher
+        # finds it full when it tries to dispatch the test.
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('lock', capacity=1)
+        # Build two tests that both want 'lock'.
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('p')
+    a = testset.new_test('a')
+    a.add_command(Shell('run', 'true', resources=['lock']))
+    b = testset.new_test('b')
+    b.add_command(Shell('run', 'true', resources=['lock']))
+''')
+        r.add_testset(str(testset_file))
+        # Manually pre-claim the resource so no slot is free.
+        r._resources['lock'].in_use = 1
+        # Run enqueue + dispatcher loop without workers.
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+        # check_pending_tests blocks while pending_tests > 0; after
+        # parking both tests on the wait list, pending_tests is
+        # empty and the loop exits cleanly.
+        # Drain the loop in a thread with a watchdog so we can fail
+        # the test if the loop hangs.
+        done = threading.Event()
+
+        def drive():
+            r.check_pending_tests()
+            done.set()
+
+        threading.Thread(target=drive, daemon=True).start()
+        # The dispatcher's "all blocked" branch sleeps 0.1s in a
+        # tight loop until pending_tests is empty; with both tests
+        # parked, it should drop out within one iteration.
+        # Since pending_tests becomes empty as soon as the second
+        # test is parked, the loop exits immediately on the next
+        # iteration.
+        assert done.wait(timeout=2.0)
+        # Both tests must be on the waiters deque, not in the
+        # worker queue, and not in pending_tests.
+        assert len(r.pending_tests) == 0
+        assert len(r._resources['lock'].waiters) == 2
+        assert r.queue.qsize() == 0
+
+    def test_release_promotes_waiter_to_queue(self, tmp_path):
+        """Releasing a resource pops a waiter and pushes it
+        directly onto the worker queue (ASAP hand-off)."""
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('lock', capacity=1)
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('h')
+    a = testset.new_test('a')
+    a.add_command(Shell('run', 'true', resources=['lock']))
+    b = testset.new_test('b')
+    b.add_command(Shell('run', 'true', resources=['lock']))
+''')
+        r.add_testset(str(testset_file))
+        # Simulate "test A is currently running with the lock":
+        # the resource is fully in use, both tests are parked.
+        r._resources['lock'].in_use = 1
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (r.check_pending_tests(), done.set()),
+            daemon=True,
+        ).start()
+        assert done.wait(timeout=2.0)
+        assert len(r._resources['lock'].waiters) == 2
+
+        # Release "test A's" claim. The first waiter should be
+        # promoted directly onto the queue.
+        r.release_resource('lock')
+        # Now in_use = 1 again (claimed for the promoted waiter)
+        # and the queue has exactly one test.
+        assert r._resources['lock'].in_use == 1
+        assert r.queue.qsize() == 1
+        assert len(r._resources['lock'].waiters) == 1
+
+        # Drain the promoted test (we have to release on its
+        # behalf since we have no workers).
+        promoted = r.queue.get_nowait()
+        assert 'lock' in promoted.pre_claimed_resources
+        r.release_resource('lock')
+        # Second waiter promoted.
+        assert r.queue.qsize() == 1
+        assert len(r._resources['lock'].waiters) == 0
+
+    def test_resource_tests_picked_before_non_resource(self, tmp_path):
+        """When the dispatcher has both resource-using and
+        non-resource candidates eligible, the resource-using ones
+        must go to the worker queue first so their (serial) build
+        phase overlaps with the (parallel) phase of non-resource
+        tests instead of clustering at the tail of the run.
+        """
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('build', capacity=1)
+        # Mimic the user's natural enqueue order: nested
+        # build-resource tests first, sibling non-resource tests
+        # after. Names are tagged so we can read them back from
+        # the worker queue.
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('mix')
+    for i in range(3):
+        t = testset.new_test(f'res{i}')
+        t.add_command(Shell('run', 'true', resources=['build']))
+    for i in range(5):
+        t = testset.new_test(f'free{i}')
+        t.add_command(Shell('run', 'true'))
+''')
+        r.add_testset(str(testset_file))
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+        # Run the dispatcher with 0 workers; everything dispatched
+        # ends up sitting on the worker queue in order.
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (r.check_pending_tests(), done.set()),
+            daemon=True,
+        ).start()
+        assert done.wait(timeout=2.0)
+        # First test pushed to the queue must be a resource-using
+        # one (capacity 1 → exactly one is dispatched, the other
+        # two are parked).
+        first = r.queue.get_nowait()
+        assert first.test.name.startswith('res'), (
+            f"first dispatched test should be a resource-using "
+            f"one, got {first.test.name!r}"
+        )
+        # The other two resource-using tests must be parked, not
+        # in the queue.
+        assert len(r._resources['build'].waiters) == 2
+        # Non-resource tests fill the remaining queue slots.
+        rest = []
+        while not r.queue.empty():
+            rest.append(r.queue.get_nowait().test.name)
+        assert all(n.startswith('free') for n in rest), rest
+        assert len(rest) == 5
+
+    def test_promoted_waiter_jumps_to_queue_front(self, tmp_path):
+        """A waiter promoted on resource release must be picked
+        up next, ahead of any non-resource tests already sitting
+        in the dispatch queue."""
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('build', capacity=1)
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('jump')
+    for i in range(2):
+        t = testset.new_test(f'res{i}')
+        t.add_command(Shell('run', 'true', resources=['build']))
+    for i in range(3):
+        t = testset.new_test(f'free{i}')
+        t.add_command(Shell('run', 'true'))
+''')
+        r.add_testset(str(testset_file))
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (r.check_pending_tests(), done.set()),
+            daemon=True,
+        ).start()
+        assert done.wait(timeout=2.0)
+
+        # After the dispatcher runs: one resource test was
+        # dispatched first, three non-resource tests follow it,
+        # one resource test is parked.
+        assert r.queue.qsize() == 4
+        assert len(r._resources['build'].waiters) == 1
+
+        # Drop the running resource-test (simulating it having
+        # been picked by a worker) so we can release the lock.
+        running = r.queue.get_nowait()
+        assert running.test.name.startswith('res')
+
+        # Queue now holds three non-resource tests in FIFO order.
+        # Releasing 'build' must promote the parked resource-test
+        # to the FRONT of the queue, not the back.
+        r.release_resource('build')
+        promoted = r.queue.get_nowait()
+        assert promoted.test.name.startswith('res'), (
+            f"promoted waiter should be picked next, but got "
+            f"{promoted.test.name!r}"
+        )
+
+    def test_capacity_n_lets_n_run(self, tmp_path):
+        """With capacity=N, the first N resource-locked tests
+        must dispatch concurrently and the (N+1)'th must park."""
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('pool', capacity=2)
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('cn')
+    for i in range(3):
+        t = testset.new_test(f't{i}')
+        t.add_command(Shell('run', 'true', resources=['pool']))
+''')
+        r.add_testset(str(testset_file))
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (r.check_pending_tests(), done.set()),
+            daemon=True,
+        ).start()
+        assert done.wait(timeout=2.0)
+        assert r._resources['pool'].in_use == 2
+        assert r.queue.qsize() == 2
+        assert len(r._resources['pool'].waiters) == 1
+
+    def test_resource_locked_run_in_parallel_with_others(self, tmp_path):
+        """End-to-end: with one capacity-1 build resource and a
+        pool of non-resource tests, the build-resource tests
+        serialize while non-resource tests run in parallel — and
+        no worker dwells inside acquire_resource."""
+        import time
+        testset_file = tmp_path / 'testset.cfg'
+        # 2 build-locked tests (each sleeps 0.3s) + 4 free tests
+        # (each sleeps 0.3s). With 4 workers, ideal wall time is
+        # ~max(2*0.3, 0.3) = 0.6s. The old behavior would block
+        # workers and approach 2*0.3 + setup overhead.
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('mix')
+    for i in range(2):
+        t = testset.new_test(f'lock{i}')
+        t.add_command(Shell('run', 'sleep 0.3', resources=['build']))
+    for i in range(4):
+        t = testset.new_test(f'free{i}')
+        t.add_command(Shell('run', 'sleep 0.3'))
+''')
+        r = Runner(properties=[], flags=[], nb_threads=4)
+        r.declare_resource('build', capacity=1)
+        r.add_testset(str(testset_file))
+        r.start()
+        try:
+            t0 = time.monotonic()
+            r.run()
+            elapsed = time.monotonic() - t0
+        finally:
+            r.stop()
+        assert r.stats.stats['passed'] == 6
+        assert r.stats.stats['failed'] == 0
+        # Loose bound: well under the worst-case serial time.
+        assert elapsed < 1.5, (
+            f"expected ~0.6s, got {elapsed:.2f}s"
+        )
+
+    def test_interrupt_drains_waiters(self, tmp_path):
+        """SIGINT must clear both pending_tests AND parked
+        waiters, so nb_pending_tests can reach 0 and run() can
+        return."""
+        r = Runner(properties=[], flags=[], nb_threads=0)
+        r.declare_resource('lock', capacity=1)
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+from gvtest.testsuite import *
+def testset_build(testset):
+    testset.set_name('i')
+    for i in range(3):
+        t = testset.new_test(f't{i}')
+        t.add_command(Shell('run', 'true', resources=['lock']))
+''')
+        r.add_testset(str(testset_file))
+        r._resources['lock'].in_use = 1  # nothing can dispatch
+        r._interrupted = False
+        for testset in r.testsets:
+            testset.enqueue()
+
+        # Park all 3 tests on the lock's waiter list.
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (r.check_pending_tests(), done.set()),
+            daemon=True,
+        ).start()
+        assert done.wait(timeout=2.0)
+        assert len(r._resources['lock'].waiters) == 3
+        assert r.nb_pending_tests == 3
+
+        # Drive the SIGINT handler directly. It must drain the
+        # waiters and bring nb_pending_tests back to 0.
+        r._handle_interrupt(0, None)
+        assert len(r._resources['lock'].waiters) == 0
+        assert r.nb_pending_tests == 0
+        assert r.event.is_set()

@@ -64,6 +64,10 @@ class TestRun(object):
         self.output: str = ""
         self.timeout_reached: bool = False
         self.current_proc: subprocess.Popen[bytes] | None = None
+        # Resources the dispatcher has already claimed for this
+        # run; the worker's first acquire of each becomes a no-op
+        # hand-off rather than a blocking semaphore wait.
+        self.pre_claimed_resources: set[str] = set()
 
         if self.target is not None:
             self.sourceme = self.target.get_sourceme()
@@ -128,9 +132,13 @@ class TestRun(object):
 
                 # Resource hand-off: release what the next
                 # command no longer needs, acquire what it
-                # newly needs. Sorted order gives a consistent
-                # global acquisition order and prevents
-                # deadlocks when multiple resources are used.
+                # newly needs. The first acquire of a resource
+                # the dispatcher pre-claimed is a no-op; the
+                # rare non-monotonic re-acquire goes through
+                # the slow path (blocking condition wait).
+                # Sorted order gives a consistent global
+                # acquisition order and prevents deadlocks
+                # when multiple resources are used.
                 want: set[str] = set(
                     getattr(command, 'resources', None) or ()
                 )
@@ -138,7 +146,7 @@ class TestRun(object):
                     self.runner.release_resource(r)
                     held.discard(r)
                 for r in sorted(want - held):
-                    self.runner.acquire_resource(r)
+                    self.runner.acquire_resource(r, self)
                     held.add(r)
 
                 retval: int = self.__exec_command(

@@ -40,6 +40,8 @@ import threading
 import time
 import importlib
 import importlib.util
+from collections import deque
+from dataclasses import dataclass, field
 from importlib.machinery import SourceFileLoader
 from types import FrameType
 from typing import Any
@@ -67,6 +69,63 @@ from gvtest.tests import (
 )
 from gvtest.stats import TestRunStats, TestStats, TestsetStats
 from gvtest.reporting import table_dump_row
+
+
+@dataclass
+class _Resource:
+    """Per-resource scheduling state.
+
+    A resource is a named slot with bounded `capacity`; tests whose
+    commands list the resource via `Command.resources` count against
+    `in_use` while they hold it. When `in_use == capacity`, further
+    candidates are parked on `waiters` instead of being dispatched
+    to a worker. Releases pop a waiter and dispatch it directly.
+    """
+    capacity: int
+    in_use: int = 0
+    waiters: 'deque[TestRun]' = field(default_factory=deque)
+
+
+class _DispatchQueue:
+    """Worker-facing dispatch queue with priority front-insertion.
+
+    Behaves like a `queue.Queue` (`put`/`get`/`get_nowait`/`empty`/
+    `qsize`) but `put(item, front=True)` inserts at the head so the
+    next worker pickup is that item. Used to hand off a freshly
+    promoted waiter ahead of the regular FIFO of dispatched tests.
+    """
+
+    def __init__(self) -> None:
+        self._deque: 'deque[TestRun | None]' = deque()
+        self._cond: threading.Condition = threading.Condition()
+
+    def put(self, item: TestRun | None, front: bool = False) -> None:
+        with self._cond:
+            if front:
+                self._deque.appendleft(item)
+            else:
+                self._deque.append(item)
+            self._cond.notify()
+
+    def get(self) -> TestRun | None:
+        with self._cond:
+            while not self._deque:
+                self._cond.wait()
+            return self._deque.popleft()
+
+    def get_nowait(self) -> TestRun | None:
+        with self._cond:
+            if not self._deque:
+                raise queue.Empty
+            return self._deque.popleft()
+
+    def empty(self) -> bool:
+        with self._cond:
+            return not self._deque
+
+    def qsize(self) -> int:
+        with self._cond:
+            return len(self._deque)
 
 
 class Worker(threading.Thread):
@@ -110,7 +169,7 @@ class Runner():
             resources: list[str] | None = None
     ) -> None:
         self.nb_threads: int = nb_threads
-        self.queue: queue.Queue[TestRun | None] = queue.Queue()
+        self.queue: _DispatchQueue = _DispatchQueue()
         self.testsets: list[TestsetImpl] = []
         self.pending_tests: list[TestRun] = []
         self.active_runs: list[TestRun] = []
@@ -160,15 +219,19 @@ class Runner():
               name, value = prop.split('=')
               self.properties[name] = value
 
-        # Resource registry — named semaphores used by
-        # Command.resources to serialize selected commands
-        # across parallel TestRuns. Lazy creation: the first
-        # acquire of an undeclared resource creates a
-        # Semaphore(1) on the fly.
-        self._resources: dict[
-            str, tuple[threading.Semaphore, int]
-        ] = {}
-        self._resources_lock: threading.Lock = threading.Lock()
+        # Resource registry. Each named resource carries
+        # capacity, current in_use count, and a FIFO of
+        # parked TestRuns. The dispatcher claims a resource
+        # at dispatch time (incrementing in_use) and parks
+        # the candidate on the resource's waiters deque
+        # when the resource is full. Releases pop a waiter
+        # and dispatch it directly to the worker queue.
+        # Lazy creation: the first acquire of an undeclared
+        # resource creates a capacity-1 entry on the fly.
+        self._resources: dict[str, _Resource] = {}
+        self._resources_cond: threading.Condition = (
+            threading.Condition(threading.Lock())
+        )
         if resources is not None:
             for spec in resources:
                 if ':' in spec:
@@ -422,6 +485,14 @@ class Runner():
         self.pending_tests.clear()
         self.nb_pending_tests -= dropped
 
+        # Drain tests parked on resource waiters
+        with self._resources_cond:
+            for res in self._resources.values():
+                n = len(res.waiters)
+                if n:
+                    res.waiters.clear()
+                    self.nb_pending_tests -= n
+
         # Drain the queue so workers don't pick up more
         while not self.queue.empty():
             try:
@@ -626,9 +697,15 @@ class Runner():
                 break
 
             if self._interrupted:
-                # Drop all remaining pending tests
+                # Drop all remaining pending tests AND any
+                # tests parked on resource wait lists, so
+                # nb_pending_tests can reach zero.
                 dropped: int = len(self.pending_tests)
                 self.pending_tests.clear()
+                with self._resources_cond:
+                    for res in self._resources.values():
+                        dropped += len(res.waiters)
+                        res.waiters.clear()
                 self.nb_pending_tests -= dropped
                 if self.nb_pending_tests <= 0:
                     self.nb_pending_tests = 0
@@ -636,19 +713,30 @@ class Runner():
                 self.lock.release()
                 break
 
-            # Find a test whose dependencies are met
-            test: TestRun | None = None
-            for i in range(
-                len(self.pending_tests) - 1, -1, -1
-            ):
-                candidate = self.pending_tests[i]
-                if candidate.test.deps_satisfied():
-                    test = self.pending_tests.pop(i)
-                    break
+            # Two-pass backward scan over pending_tests.
+            #
+            # Pass 1 looks only at resource-using candidates so
+            # the (serial) build phase of build_resource tests
+            # ramps up at the start of the run, overlapping with
+            # the (parallel) phase of non-resource tests. Pass 2
+            # picks any remaining dispatchable test.
+            #
+            # In each pass: skip tests with unmet deps; try to
+            # claim resources atomically — on success dispatch,
+            # on failure park on the first full resource and
+            # keep scanning.
+            test: TestRun | None = self._scan_and_pick(
+                prefer_resource=True
+            )
+            if test is None:
+                test = self._scan_and_pick(
+                    prefer_resource=False
+                )
 
             if test is None:
-                # All pending tests have unmet deps;
-                # wait for running tests to finish
+                # All pending tests are blocked (parked on
+                # waiters lists or unmet deps). Wait for a
+                # running test to finish or release a resource.
                 self.lock.release()
                 time.sleep(0.1)
                 continue
@@ -709,43 +797,166 @@ class Runner():
                 f"Resource {name!r} capacity must be >= 1, "
                 f"got {capacity}"
             )
-        with self._resources_lock:
+        with self._resources_cond:
             existing = self._resources.get(name)
             if existing is not None:
-                _, existing_cap = existing
-                if existing_cap != capacity:
+                if existing.capacity != capacity:
                     raise ValueError(
                         f"Resource {name!r} already declared with "
-                        f"capacity {existing_cap}, cannot redeclare "
-                        f"with capacity {capacity}"
+                        f"capacity {existing.capacity}, cannot "
+                        f"redeclare with capacity {capacity}"
                     )
                 return
-            self._resources[name] = (
-                threading.Semaphore(capacity), capacity
-            )
+            self._resources[name] = _Resource(capacity=capacity)
 
-    def acquire_resource(self, name: str) -> None:
-        """Acquire a named resource, blocking until available.
+    @staticmethod
+    def _needed_resources(test: TestRun) -> set[str]:
+        """Union of resource names listed by any of the test's
+        commands."""
+        needed: set[str] = set()
+        for cmd in test.test.commands:
+            cmd_res = getattr(cmd, 'resources', None)
+            if cmd_res:
+                needed.update(cmd_res)
+        return needed
 
-        Lazily creates a capacity-1 semaphore if the resource was
-        not previously declared.
+    def _get_or_create_resource(self, name: str) -> _Resource:
+        """Caller must hold _resources_cond. Lazy-creates a
+        capacity-1 entry if needed."""
+        res = self._resources.get(name)
+        if res is None:
+            res = _Resource(capacity=1)
+            self._resources[name] = res
+        return res
+
+    def _try_claim(self, test: TestRun) -> str | None:
+        """Caller must hold _resources_cond.
+
+        Try to atomically claim every resource the test needs. On
+        success, increments in_use for each and stamps
+        test.pre_claimed_resources, returning None. On failure,
+        returns the first resource name that was full (so the caller
+        can park the test on it)."""
+        needed = self._needed_resources(test)
+        if not needed:
+            test.pre_claimed_resources = set()
+            return None
+        for name in needed:
+            res = self._get_or_create_resource(name)
+            if res.in_use >= res.capacity:
+                return name
+        for name in needed:
+            self._resources[name].in_use += 1
+        test.pre_claimed_resources = set(needed)
+        return None
+
+    def _scan_and_pick(
+        self, prefer_resource: bool
+    ) -> TestRun | None:
+        """Walk pending_tests backward (LIFO) and try to dispatch
+        one test.
+
+        When `prefer_resource` is True, only resource-using
+        candidates are considered (the others are left in place for
+        the second pass). For each candidate with satisfied deps,
+        attempt to claim its resources. On success the test is
+        popped and returned. On failure the test is popped and
+        appended to the first full resource's wait list, and the
+        scan continues. Returns None when nothing was dispatched.
+        Caller must hold self.lock.
         """
-        with self._resources_lock:
-            entry = self._resources.get(name)
-            if entry is None:
-                entry = (threading.Semaphore(1), 1)
-                self._resources[name] = entry
-            sem = entry[0]
-        sem.acquire()
+        i = len(self.pending_tests) - 1
+        while i >= 0:
+            candidate = self.pending_tests[i]
+            if not candidate.test.deps_satisfied():
+                i -= 1
+                continue
+            if prefer_resource and not self._needed_resources(
+                candidate
+            ):
+                i -= 1
+                continue
+            with self._resources_cond:
+                blocker = self._try_claim(candidate)
+                if blocker is None:
+                    return self.pending_tests.pop(i)
+                self._resources[blocker].waiters.append(
+                    candidate
+                )
+                self.pending_tests.pop(i)
+            # The list shrank by one; restart from the new tail
+            # since indices below i are unchanged but i itself
+            # may now point past the end.
+            i = len(self.pending_tests) - 1
+        return None
+
+    def acquire_resource(
+        self, name: str, test_run: TestRun | None = None
+    ) -> None:
+        """Claim a named resource for the caller.
+
+        Fast path: if `test_run` is given and `name` is in
+        `test_run.pre_claimed_resources`, the dispatcher already
+        accounted for this claim — return immediately and remove the
+        name from the pre-claim set so subsequent releases match
+        exactly one claim.
+
+        Slow path (legacy / non-monotonic patterns): block until
+        `in_use < capacity`, then increment. Lazily creates a
+        capacity-1 resource if undeclared.
+        """
+        if (test_run is not None
+                and name in test_run.pre_claimed_resources):
+            test_run.pre_claimed_resources.discard(name)
+            return
+        with self._resources_cond:
+            res = self._get_or_create_resource(name)
+            while res.in_use >= res.capacity:
+                self._resources_cond.wait()
+            res.in_use += 1
 
     def release_resource(self, name: str) -> None:
-        """Release a previously-acquired named resource."""
-        with self._resources_lock:
-            entry = self._resources.get(name)
-        if entry is None:
-            # Should not happen in well-formed code; be defensive.
-            return
-        entry[0].release()
+        """Release a previously-claimed named resource.
+
+        Decrements in_use and tries to promote a waiter: scans the
+        resource's waiters deque, picks the first one whose entire
+        resource set can now be claimed, claims it, and dispatches
+        it directly to the worker queue. Waiters that still can't
+        be fully claimed are re-parked on whichever resource of
+        theirs is still full.
+        """
+        promoted: TestRun | None = None
+        with self._resources_cond:
+            res = self._resources.get(name)
+            if res is None:
+                # Should not happen in well-formed code; be
+                # defensive.
+                return
+            res.in_use -= 1
+
+            # Try to promote one waiter. Limit iterations to the
+            # current waiter count to bound work in the (unusual)
+            # case where every waiter has to be re-parked.
+            attempts = len(res.waiters)
+            while promoted is None and attempts > 0 and res.waiters:
+                attempts -= 1
+                waiter = res.waiters.popleft()
+                blocker = self._try_claim(waiter)
+                if blocker is None:
+                    promoted = waiter
+                else:
+                    # waiter still can't run — re-park on the
+                    # blocker (which is by definition not `name`,
+                    # since `name` just freed a slot).
+                    self._resources[blocker].waiters.append(waiter)
+
+            self._resources_cond.notify_all()
+
+        if promoted is not None:
+            # Front of the dispatch queue so the next idle worker
+            # picks the promoted test up immediately, ahead of any
+            # already-queued non-resource tests.
+            self.queue.put(promoted, front=True)
 
     def register_bench_result(
         self, name: str, value: float, desc: str,

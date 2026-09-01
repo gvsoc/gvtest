@@ -175,6 +175,20 @@ parser.add_argument(
     help="Specify SQLite database for benchmark results"
 )
 parser.add_argument(
+    "--bench-url", dest="bench_url",
+    default=None,
+    help="Bench server base URL (e.g. http://host:8720); benchmark "
+    "results are uploaded there at the end of the run. Upload failures "
+    "are warnings, they never fail the run."
+)
+parser.add_argument(
+    "--bench-build", dest="bench_build",
+    default=os.environ.get('GVTEST_BENCH_BUILD'),
+    metavar="JOB:NUMBER",
+    help="Attribute the uploaded results to a CI build (e.g. "
+    "sdk-nightly:42). Default: $GVTEST_BENCH_BUILD."
+)
+parser.add_argument(
     "--no-bench-check", dest="bench_check", action="store_false",
     help="Do not fail tests when a benchmark with a declared reference and "
     "tolerance is out of tolerance (still recorded). Default: benches with "
@@ -238,6 +252,8 @@ try:
         flags=args.flags,
         bench_db=args.bench_db,
         bench_check=args.bench_check,
+        bench_url=args.bench_url,
+        bench_build=args.bench_build,
         targets=args.targets,
         platform=args.platform, flows=args.flows, report_all=args.all,
         progress=not args.no_progress,

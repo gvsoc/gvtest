@@ -36,13 +36,27 @@ from pathlib import Path
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS builds (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job           TEXT NOT NULL,
+    build_number  INTEGER NOT NULL,
+    git_commit    TEXT,
+    git_branch    TEXT,
+    timestamp     TEXT NOT NULL,
+    registered_at TEXT,
+    UNIQUE(job, build_number)
+);
+
 CREATE TABLE IF NOT EXISTS runs (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp  TEXT NOT NULL,
-    git_commit TEXT,
-    git_branch TEXT,
-    platform   TEXT NOT NULL,
-    json_file  TEXT
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL,
+    git_commit  TEXT,
+    git_branch  TEXT,
+    platform    TEXT NOT NULL,
+    json_file   TEXT,
+    build_id    INTEGER REFERENCES builds(id),
+    uuid        TEXT,
+    uploaded_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS results (
@@ -67,10 +81,16 @@ CREATE INDEX IF NOT EXISTS idx_results_target
     ON results(target);
 CREATE INDEX IF NOT EXISTS idx_runs_timestamp
     ON runs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_runs_build
+    ON runs(build_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_uuid
+    ON runs(uuid) WHERE uuid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_results_test_target_metric
+    ON results(test, target, metric);
 """
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -78,26 +98,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     Version 2 added the reference/tolerance/ref_type columns; version 3
     added value_min/value_max (the spread of a metric measured over
-    several activations). Older rows read back NULL, i.e. measured-only
-    and/or a single measurement with no spread.
+    several activations); version 4 added the builds table and the
+    build_id/uuid/uploaded_at run columns used by the bench server.
+    Older rows read back NULL everywhere.
     """
     if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
         return
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
-    for col, decl in (('reference', 'REAL'), ('tolerance', 'REAL'),
-                      ('ref_type', 'TEXT'),
-                      ('value_min', 'REAL'), ('value_max', 'REAL')):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE results ADD COLUMN {col} {decl}")
-    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+    # Column additions must run before executescript(): the v4 indexes in
+    # _SCHEMA reference runs.build_id/uuid, which don't exist yet in an
+    # older DB. On a fresh DB the tables don't exist and there is nothing
+    # to alter.
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'results' in tables:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
+        for col, decl in (('reference', 'REAL'), ('tolerance', 'REAL'),
+                          ('ref_type', 'TEXT'),
+                          ('value_min', 'REAL'), ('value_max', 'REAL')):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE results ADD COLUMN {col} {decl}")
+    if 'runs' in tables:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+        for col, decl in (('build_id', 'INTEGER REFERENCES builds(id)'),
+                          ('uuid', 'TEXT'), ('uploaded_at', 'TEXT')):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
     conn.commit()
 
 
 def init_db(db_path: str) -> sqlite3.Connection:
     """Create tables if they don't exist. Returns connection."""
     conn = sqlite3.connect(db_path)
-    conn.executescript(_SCHEMA)
     _migrate(conn)
+    conn.executescript(_SCHEMA)
+    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+    conn.commit()
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 

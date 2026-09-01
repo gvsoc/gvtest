@@ -161,6 +161,8 @@ class Runner():
             flags: list[str] | None = None,
             bench_db: str | None = None,
             bench_check: bool = True,
+            bench_url: str | None = None,
+            bench_build: str | None = None,
             targets: list[str] | None = None,
             platform: str = 'gvsoc',
             flows: list[str] | None = None,
@@ -193,6 +195,8 @@ class Runner():
         # When False, the auto-added bench_check commands no-op, so a bench
         # with a ref+tol is recorded but does not gate the test.
         self.bench_check: bool = bench_check
+        self.bench_url: str | None = bench_url
+        self.bench_build: str | None = bench_build
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
         self.target_names: list[str] = targets if targets is not None else ['default']
@@ -412,7 +416,8 @@ class Runner():
         for testset in self.testsets:
             self.stats.add_child_testset(testset)
 
-        if self.bench_db is not None and self.bench_results:
+        if (self.bench_db is not None or self.bench_url is not None) \
+                and self.bench_results:
             from datetime import datetime as _dt, timezone as _tz
             report = {
                 'timestamp': _dt.now(_tz.utc).isoformat(),
@@ -421,7 +426,10 @@ class Runner():
                 'platform': self.platform or 'gvsoc',
                 'results': self.bench_results,
             }
-            self._write_bench_db(report)
+            if self.bench_db is not None:
+                self._write_bench_db(report)
+            if self.bench_url is not None:
+                self._upload_bench(report)
 
 
 
@@ -1033,3 +1041,19 @@ class Runner():
         ).fetchone()[0]
         logging.info(f"Bench: inserted {count} result(s) into {self.bench_db}")
         conn.close()
+
+    def _upload_bench(self, report: dict[str, Any]) -> None:
+        # The upload is telemetry: a dead or misconfigured server must
+        # never fail the test run (tolerance gating is bench_check's job).
+        import uuid
+        from gvtest.bench import upload
+        try:
+            build = (upload.parse_build(self.bench_build)
+                     if self.bench_build else None)
+            result = upload.post_run(self.bench_url, report,
+                                     run_uuid=str(uuid.uuid4()), build=build)
+            logging.info(
+                f"Bench: uploaded {result.get('results')} result(s) to "
+                f"{self.bench_url} (run_id={result.get('run_id')})")
+        except (upload.UploadError, ValueError) as exc:
+            logging.warning(f"Bench: upload failed: {exc}")

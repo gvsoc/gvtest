@@ -160,6 +160,12 @@ parser.add_argument(
 parser.add_argument("--flags", dest="flags", action="append", default=[], help="Specifies flags")
 parser.add_argument("--platform", dest="platform", default='gvsoc', help="Specifies platform")
 parser.add_argument(
+    "--flow", dest="flows", action="append", default=None,
+    help="Test flow(s) for app tests declared with new_app_test "
+         "(gvrun, make, or a comma-separated list); overrides the "
+         "per-target 'test_flows' gvtest.yaml property"
+)
+parser.add_argument(
     "--junit-report-path", dest="junit_report_path",
     default='junit-reports', help="Specifies flags"
 )
@@ -233,7 +239,7 @@ try:
         bench_db=args.bench_db,
         bench_check=args.bench_check,
         targets=args.targets,
-        platform=args.platform, report_all=args.all,
+        platform=args.platform, flows=args.flows, report_all=args.all,
         progress=not args.no_progress,
         tolerate_missing=args.tolerate_missing,
         resources=args.resources,

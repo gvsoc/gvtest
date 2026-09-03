@@ -364,6 +364,87 @@ class TestsetImpl(testsuite.Testset):
             self.tests.append(test)
         return test
 
+    def new_app_test(
+        self, name: str,
+        checker: Callable[..., Any] | None = None,
+        retval: int = 0,
+        gvrun_flags: str = '', make_flags: str = '',
+        build_resource: str | None = None,
+        no_clean: bool = False
+    ) -> list[TestCommon]:
+        """Declare one application test, expanded per the flow policy.
+
+        The flow policy is resolved in this order: the gvtest ``--flow``
+        CLI option, then the target's ``test_flows`` property in
+        gvtest.yaml (space/comma-separated: ``gvrun``, ``make``), then
+        ``gvrun``.  The gvrun expansion keeps the plain name; the make
+        expansion is named ``<name>.make`` so reports, filters and
+        benches distinguish the flows.  A make expansion whose target has
+        no generated make rules is declared but marked skipped.
+
+        Flow-specific flags go in *gvrun_flags* / *make_flags*; a test
+        that needs deeper per-flow differences should use the explicit
+        new_gvrun_test / new_make_test factories instead.
+        """
+        tests: list[TestCommon] = []
+        for flow in self._resolve_test_flows():
+            if flow == 'gvrun':
+                tests.append(self.new_gvrun_test(
+                    name, flags=gvrun_flags, checker=checker,
+                    retval=retval, build_resource=build_resource,
+                    no_clean=no_clean,
+                ))
+            elif flow == 'make':
+                test = self.new_make_test(
+                    f'{name}.make', flags=make_flags, checker=checker,
+                    retval=retval, build_resource=build_resource,
+                    no_clean=no_clean,
+                )
+                reason = self._make_flow_unavailable_reason()
+                if reason is not None:
+                    test.skip(reason)
+                tests.append(test)
+            else:
+                raise RuntimeError(
+                    f"Unknown test flow '{flow}' for app test '{name}' "
+                    "(expected 'gvrun' or 'make')"
+                )
+        return tests
+
+    def _resolve_test_flows(self) -> list[str]:
+        """Flow list for new_app_test: CLI, then target property, then gvrun."""
+        flows = getattr(self.runner, 'flows', None)
+        if flows:
+            return list(flows)
+        if self.target is not None:
+            prop = self.target.get_property('test_flows')
+            if prop is not None:
+                if isinstance(prop, str):
+                    return prop.replace(',', ' ').split()
+                return list(prop)
+        return ['gvrun']
+
+    def _make_flow_unavailable_reason(self) -> str | None:
+        """Reason the make flow cannot run for this target, or None if it can.
+
+        The make flow needs the bforge-generated per-target rules in the
+        install tree (install/pulpos/rules/<target>/).  When the install
+        location cannot be determined, return None and let make report.
+        """
+        if self.target is None:
+            return 'make flow requires a target'
+        root = os.environ.get('GVSOC_WORKDIR') or os.environ.get('EL_SDK_HOME')
+        if root is None:
+            return None
+        target_name = self.target.get_name()
+        rules = os.path.join(
+            root, 'install', 'pulpos', 'rules', target_name, 'bforge_target.mk',
+        )
+        if not os.path.exists(rules):
+            return (f'no generated make rules for target {target_name} '
+                    f'(rebuild the SDK with TARGETS={target_name})')
+        return None
+
     def new_sdk_test(
         self, name: str, flags: str | None = None,
         checker: Callable[..., Any] | None = None,

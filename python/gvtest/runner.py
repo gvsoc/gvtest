@@ -163,6 +163,7 @@ class Runner():
             bench_check: bool = True,
             targets: list[str] | None = None,
             platform: str = 'gvsoc',
+            flows: list[str] | None = None,
             report_all: bool = False,
             progress: bool = False,
             tolerate_missing: bool = False,
@@ -197,6 +198,13 @@ class Runner():
         self.target_names: list[str] = targets if targets is not None else ['default']
         self._cli_targets_explicit: bool = targets is not None
         self.platform: str | None = platform
+        # Test-flow override from the CLI (--flow); when set it takes
+        # precedence over the per-target 'test_flows' gvtest.yaml property
+        # consumed by TestsetImpl.new_app_test().
+        self.flows: list[str] | None = None
+        if flows:
+            self.flows = [f for item in flows
+                          for f in item.replace(',', ' ').split()]
         # Fallback target for tests that aren't attached to any
         # gvtest.yaml-declared target. Always named 'default' so
         # they report under a neutral label; using the first

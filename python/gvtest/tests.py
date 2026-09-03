@@ -735,11 +735,17 @@ class MakeTestImpl(TestCommon, testsuite.Test):
         if platform is not None:
             self.flags += ' platform=%s' % platform
 
+        target_name: str | None = target.get_name() if target is not None else None
+        if target_name is not None:
+            self.flags += ' target=%s' % target_name
+
+        # Key the build dir on the target so fanned-out targets don't collide.
+        build_key: str = target_name if target_name is not None else runner.get_config()
         workdir: str | None = os.environ.get('GVSOC_WORKDIR')
         if workdir is None:
-            builddir: str = f'{path}/build/{runner.get_config()}/{self.name}'
+            builddir: str = f'{path}/build/{build_key}/{self.name}'
         else:
-            builddir = f'{workdir}/tests/{self.get_path()}'
+            builddir = f'{workdir}/tests/{self.get_path()}/{build_key}'
         self.flags += f' build={builddir}'
 
         self.add_command(testsuite.Shell('clean', 'make clean %s' % (self.flags)))

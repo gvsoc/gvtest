@@ -414,12 +414,27 @@ h1 { font-size:30px; line-height:1.15; margin:6px 0 4px; font-weight:650; }
 .legend i { display:inline-block; width:10px; height:10px; border-radius:2px;
   margin-right:6px; vertical-align:-1px; }
 .filters { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 18px; }
-.filters button { font:13px system-ui,-apple-system,"Segoe UI",sans-serif;
+.filters button, .hwin button {
+  font:13px system-ui,-apple-system,"Segoe UI",sans-serif;
   padding:5px 14px; border-radius:16px; border:1px solid var(--grid);
   background:var(--surface); color:var(--ink-2); cursor:pointer; }
-.filters button:hover { border-color:var(--accent); color:var(--accent); }
-.filters button[aria-pressed="true"] { background:var(--accent);
-  border-color:var(--accent); color:#fff; font-weight:600; }
+.filters button:hover, .hwin button:hover { border-color:var(--accent);
+  color:var(--accent); }
+.filters button[aria-pressed="true"], .hwin button[aria-pressed="true"] {
+  background:var(--accent); border-color:var(--accent); color:#fff;
+  font-weight:600; }
+.hwin { display:flex; gap:6px; flex-wrap:wrap; align-items:center;
+  margin:0 0 18px; font-size:13px; color:var(--ink-2); }
+.hwin button { padding:3px 11px; font-size:12px; }
+td.dh { padding:3px 10px; vertical-align:middle; }
+td.dh svg { display:block; overflow:hidden; }
+td.dh .band { fill:var(--ok-bg); }
+td.dh .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 2; }
+td.dh .line { fill:none; stroke:var(--ink-2); stroke-width:1.5; }
+td.dh .pt { fill:transparent; }
+td.dh .pt:hover { fill:var(--ink-2); }
+td.dh .last.ok { fill:var(--ok); } td.dh .last.warn { fill:var(--warn); }
+td.dh .last.bad { fill:var(--bad); }
 .hidden { display:none !important; }
 .histo { background:var(--surface); border:1px solid var(--border);
   border-radius:6px; padding:18px 20px 10px; margin-bottom:36px; }
@@ -716,9 +731,24 @@ def _improve_cell(cell: dict[str, Any] | None, grp: bool = False) -> str:
             f'title="{_esc(title)}">{pp:+.1f} pp</td>')
 
 
+def _history_cell(cell: dict[str, Any] | None) -> str:
+    """Δ over the recent runs; the sparkline is drawn client-side (_HIST_JS)
+    so the run window can be changed without regenerating the page."""
+    points = cell.get('delta_history') if cell else None
+    if not points:
+        return '<td class="dh"></td>'
+    data = json.dumps(points, separators=(',', ':'))
+    return (f'<td class="dh" data-h="{_esc(data)}" '
+            f'data-tol="{cell["tol_pct"]:g}"></td>')
+
+
 def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
     targets = cluster['targets']
     stats = cluster['stats']
+    # Only annotate_trends() sets delta_history (i.e. when history was built).
+    with_history = any(c is not None and 'delta_history' in c
+                       for row in cluster['rows'] for c in row['cells'])
+    hist_hdr = '<th class="txt">Δ history</th>' if with_history else ''
 
     window_days = next((c['trend_window_days'] for row in cluster['rows']
                         for c in row['cells']
@@ -758,7 +788,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
         # Deltas first: they are what the reader scans. Then how |Δ| is
         # moving, then the raw numbers behind it.
         out.append('<th class="grp">Δ avg</th><th>Δ min</th><th>Δ max</th>'
-                   f'{impr_hdr}'
+                   f'{hist_hdr}{impr_hdr}'
                    f'<th{trend_prev_grp}>{_esc(trend_prev_hdr)}</th>'
                    f'<th>{_esc(trend_win_hdr)}</th>'
                    '<th class="grp">Ref avg</th><th>Ref min</th>'
@@ -768,7 +798,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
                    '</tr></thead><tbody>')
     else:
         out.append(f'<th class="grp">Δ</th>'
-                   f'{impr_hdr}'
+                   f'{hist_hdr}{impr_hdr}'
                    f'<th{trend_prev_grp}>{_esc(trend_prev_hdr)}</th>'
                    f'<th>{_esc(trend_win_hdr)}</th>'
                    f'<th class="grp">Ref</th><th>Measured</th>'
@@ -795,6 +825,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
             out.append(_delta_cell(cell, grp=True))
             for side in ('min', 'max'):
                 out.append(_spread_delta_cell(cell, side))
+            if with_history:
+                out.append(_history_cell(cell))
             if show_improve:
                 out.append(_improve_cell(cell, grp=True))
             out.append(_trend_cell(cell, 'trend_prev_pct',
@@ -808,6 +840,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
                            f'{_esc(_fmt_value(value))}</td>')
         else:
             out.append(_delta_cell(cells[0], grp=True))
+            if with_history:
+                out.append(_history_cell(cells[0]))
             if show_improve:
                 out.append(_improve_cell(cells[0], grp=True))
             out.append(_trend_cell(cells[0], 'trend_prev_pct',
@@ -940,6 +974,97 @@ _JS = """
 """
 
 
+# Δ-history sparklines: one per table row, redrawn over the last N runs picked
+# with the .hwin buttons (N = 0 means every run). The choice is remembered per
+# browser. Each point carries [Δ%, severity, commit, timestamp].
+_HIST_JS = r"""
+(function () {
+  'use strict';
+  var cells = document.querySelectorAll('td.dh[data-h]');
+  var btns = Array.prototype.slice.call(
+      document.querySelectorAll('.hwin button'));
+  if (!cells.length) return;
+  var W = 120, H = 26, P = 3;
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function fmt(d) { return (d >= 0 ? '+' : '') + d.toFixed(1) + '%'; }
+
+  function draw(td, n) {
+    var all = JSON.parse(td.getAttribute('data-h'));
+    var pts = n > 0 ? all.slice(-n) : all;
+    var tol = parseFloat(td.getAttribute('data-tol')) || 0;
+    var ds = pts.map(function (p) { return p[0]; });
+    // Scale to the data so movement stays visible on metrics far from their
+    // reference, but never tighter than the tolerance band's width, so noise
+    // is not blown up. The band and zero come in when the data is near them.
+    var lo = Math.min.apply(null, ds), hi = Math.max.apply(null, ds);
+    var minSpan = Math.max(2 * tol, 2);
+    if (hi - lo < minSpan) {
+      var mid = (lo + hi) / 2;
+      lo = mid - minSpan / 2; hi = mid + minSpan / 2;
+    }
+    var gap = lo > tol ? lo - tol : (hi < -tol ? -tol - hi : 0);
+    if (gap <= hi - lo) { lo = Math.min(lo, -tol); hi = Math.max(hi, tol); }
+    var pad = (hi - lo) * 0.08;
+    lo -= pad; hi += pad;
+    function x(i) {
+      return pts.length < 2 ? W / 2 : P + i * (W - 2 * P) / (pts.length - 1);
+    }
+    function y(v) { return P + (hi - v) / (hi - lo) * (H - 2 * P); }
+
+    var s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W +
+        ' ' + H + '" role="img"><title>' + esc('Δ over ' +
+        (pts.length < all.length ? 'the last ' : 'all ') + pts.length +
+        ' run(s): ' + fmt(ds[0]) + ' → ' + fmt(ds[ds.length - 1]) +
+        ' (band: ±' + tol + '% tolerance)') + '</title>' +
+        '<rect class="band" x="0" y="' + y(tol).toFixed(1) + '" width="' + W +
+        '" height="' + Math.max(0, y(-tol) - y(tol)).toFixed(1) + '"/>' +
+        '<line class="zero" x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) +
+        '" y2="' + y(0).toFixed(1) + '"/>';
+    if (pts.length > 1) {
+      s += '<polyline class="line" points="' + pts.map(function (p, i) {
+        return x(i).toFixed(1) + ',' + y(p[0]).toFixed(1);
+      }).join(' ') + '"/>';
+    }
+    pts.forEach(function (p, i) {
+      var last = i === pts.length - 1;
+      s += '<circle class="' + (last ? 'last ' + esc(p[1] || '') : 'pt') +
+          '" cx="' + x(i).toFixed(1) + '" cy="' + y(p[0]).toFixed(1) +
+          '" r="' + (last ? 2.8 : 2.2) + '"><title>' +
+          esc(fmt(p[0]) + ' · ' + p[2] + ' · ' +
+              p[3].replace('T', ' ')) + '</title></circle>';
+    });
+    td.innerHTML = s + '</svg>';
+  }
+
+  function apply(n) {
+    btns.forEach(function (b) {
+      b.setAttribute('aria-pressed', String(+b.getAttribute('data-n') === n));
+    });
+    Array.prototype.forEach.call(cells, function (td) { draw(td, n); });
+    try { localStorage.setItem('calib-hwin', String(n)); } catch (e) {}
+  }
+
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      apply(+b.getAttribute('data-n'));
+    });
+  });
+  var n = 10;
+  try {
+    var saved = localStorage.getItem('calib-hwin');
+    if (saved !== null && btns.some(function (b) {
+      return b.getAttribute('data-n') === saved;
+    })) n = +saved;
+  } catch (e) {}
+  apply(n);
+})();
+"""
+
+
 def build_history(
     series: dict[Key, list[dict[str, Any]]],
     baseline: dict[Key, dict[str, Any]] | None = None,
@@ -1007,13 +1132,23 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
     trend_prev_pct: improvement of |Δ| against the previous run.
     trend_window_pct: improvement of |Δ| against the mean |Δ| of the runs
     in the `window_days` before the current one (the recent norm).
+    delta_history: [Δ%, severity, commit, timestamp] per run, oldest first,
+    with tol_pct the tolerance band it is judged against.
     """
+    default_tol_pct = model['default_tol_pct']
     for cell in model['cells']:
         cell['trend_prev_pct'] = None
         cell['trend_window_pct'] = None
         cell['trend_window_days'] = window_days
         points = history['metrics'].get(
             (cell['test'], cell['target'], cell['metric'])) or []
+        cell['delta_history'] = [
+            [round(p['delta_pct'], 3), p['severity'],
+             (p['git_commit'] or '')[:8], (p['timestamp'] or '')[:16]]
+            for p in points]
+        cell['tol_pct'] = (abs(cell['tol'] / cell['ref']) * 100
+                           if cell['tol'] is not None and cell['ref']
+                           else default_tol_pct)
         if len(points) < 2 or cell['delta_pct'] is None:
             continue
         now_abs = abs(points[-1]['delta_pct'])
@@ -1290,11 +1425,22 @@ def render_html(model: dict[str, Any], title: str,
                   for t in target_names)
         + '</div>')
 
+    hwin_html = ''
+    if any('delta_history' in c for c in model['cells']):
+        hwin_html = (
+            '<div class="hwin" role="group" aria-label="Δ history window">'
+            '<span>Δ history:</span>'
+            + ''.join(f'<button type="button" data-n="{n}" '
+                      f'aria-pressed="{str(n == 10).lower()}">{label}</button>'
+                      for n, label in ((5, 'last 5'), (10, 'last 10'),
+                                       (100, 'last 100'), (0, 'all')))
+            + '</div>')
+
     acc_txt = (f"{g['accuracy']:.1f}<small>%</small>"
                if g['accuracy'] is not None else '—')
 
     stats_html = f"""
-{filters_html}
+{filters_html}{hwin_html}
 <div class="strip">
   <div class="stat"><div class="v" id="t-acc">{acc_txt}</div>
     <div class="k">accuracy — mean |Δ| vs reference
@@ -1402,7 +1548,7 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}</script>
+<script>{_JS}{_HIST_JS}</script>
 </body></html>
 """
 

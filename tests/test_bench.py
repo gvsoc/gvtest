@@ -2,7 +2,9 @@
 Tests for gvtest.bench — DB schema/migration and the calibration report.
 """
 
+import html
 import json
+import re
 import sqlite3
 
 import pytest
@@ -523,6 +525,43 @@ class TestCalibrationHistory:
         # A single run has nothing to trend
         assert 'Calibration over time' not in calibration.render_html(
             model, 'hist', history={'runs': hist['runs'][:1], 'metrics': {}})
+
+    def test_delta_history_per_row(self, tmp_path):
+        db = self._db(tmp_path, [100, 104, 130])
+        conn = sqlite3.connect(db)
+        rows = calibration.query_results(conn)
+        hist = calibration.build_history(calibration.query_history(conn))
+        conn.close()
+        model = calibration.build_model(rows)
+        calibration.annotate_trends(model, hist)
+        cell = model['cells'][0]
+        assert cell['delta_history'] == [
+            [0.0, 'ok', 'commit0', '2026-07-16T10:00'],
+            [4.0, 'ok', 'commit1', '2026-07-17T10:00'],
+            [30.0, 'bad', 'commit2', '2026-07-18T10:00']]
+        assert cell['tol_pct'] == 5.0     # declared tol 5 on a ref of 100
+
+        html_str = calibration.render_html(model, 'hist', history=hist)
+        assert '<th class="txt">Δ history</th>' in html_str
+        m = re.search(r'<td class="dh" data-h="([^"]*)" data-tol="5">',
+                      html_str)
+        assert json.loads(html.unescape(m.group(1))) == cell['delta_history']
+        # Window buttons, last 10 selected by default
+        for n in ('5', '10', '100', '0'):
+            assert f'data-n="{n}"' in html_str
+        assert 'data-n="10" aria-pressed="true"' in html_str
+        assert 'td.dh[data-h]' in html_str      # the drawing script
+
+    def test_delta_history_absent_without_trends(self, tmp_path):
+        # History column and window selector only appear once trends are
+        # annotated (a single-run report has no series to draw).
+        db = self._db(tmp_path, [110])
+        conn = sqlite3.connect(db)
+        model = calibration.build_model(calibration.query_results(conn))
+        conn.close()
+        html_str = calibration.render_html(model, 'no history')
+        assert 'Δ history</th>' not in html_str
+        assert 'class="hwin"' not in html_str
 
 
 class TestCalibrationRender:

@@ -181,13 +181,15 @@ class TestDescriptions:
         html_str = calibration.render_html(
             self._model(tmp_path, _LONG_DESC), 'descs')
         # Long description: summary in the row, the rest behind a <details>
-        assert ('<details class="mdoc"><summary><span class="mname">long'
-                '</span><span class="mdesc">Cycles of one 4 KB copy.</span>'
-                '</summary><p>The core programs the copy and polls its end. '
-                'The reference is the RTL.</p></details>') in html_str
+        assert ('<details class="mdoc"><summary><span class="mname" '
+                'title="long">long</span><span class="mdesc">Cycles of one '
+                '4 KB copy.</span></summary><p>The core programs the copy and '
+                'polls its end. The reference is the RTL.</p></details>'
+                ) in html_str
         # One-sentence description: no <details>
-        assert ('<td class="txt"><span class="mname">short</span>'
-                '<span class="mdesc">short</span></td>') in html_str
+        assert ('<td class="txt" style="padding-left:30px"><span class="mname" '
+                'title="short">short</span><span class="mdesc">short</span>'
+                '</td>') in html_str
         assert 'class="docs-all"' in html_str
 
     def test_no_docs_button_without_details(self, tmp_path):
@@ -204,6 +206,70 @@ class TestDescriptions:
         html_str = render_report_html(trends)
         assert (f'<td title="{html.escape(_LONG_DESC)}">Cycles of one 4 KB '
                 'copy.</td>') in html_str
+
+
+# ---------------------------------------------------------------------------
+# Calibration table as a tree: test, then the dotted parts of the metric name
+# ---------------------------------------------------------------------------
+
+class TestCalibrationTree:
+
+    def _model(self, tmp_path, runs=1):
+        # Δ: a.b.x +10%, a.b.y -30%, a.c.z +2% (ref 100); a second test with
+        # one metric. The second run moves a.b.x to +20%.
+        db = _make_db(tmp_path, [_run([
+            _result('t:one', 'tgt', 'a.b.x', 110 + 10 * i, ref=100, src='rtl'),
+            _result('t:one', 'tgt', 'a.b.y', 70, ref=100, src='rtl'),
+            _result('t:one', 'tgt', 'a.c.z', 102, ref=100, src='rtl'),
+            _result('t:two', 'tgt', 'solo', 100, ref=100, src='rtl')],
+            timestamp=f'2026-07-{16 + i}T10:00:00+00:00')
+            for i in range(runs)])
+        conn = sqlite3.connect(db)
+        rows = calibration.query_results(conn)
+        hist = calibration.build_history(calibration.query_history(conn))
+        conn.close()
+        model = calibration.build_model(rows)
+        calibration.annotate_trends(model, hist)
+        return model, hist
+
+    def _groups(self, html_str):
+        return re.findall(
+            r'<tr class="grow" data-gid="(\d+)" data-key="([^"]*)" '
+            r'data-anc="([^"]*)">.*?<button[^>]*>([^<]*)</button>'
+            r'<span class="gmeta">([^<]*)</span></td>'
+            r'<td class="num grp[^"]*"[^>]*>([^<]*)</td>', html_str)
+
+    def test_levels_and_averages(self, tmp_path):
+        model, hist = self._model(tmp_path)
+        html_str = calibration.render_html(model, 'tree', history=hist)
+        groups = {label: (gid, anc, meta, avg)
+                  for gid, key, anc, label, meta, avg in self._groups(html_str)}
+        # The single-child chain t:one > a is merged into one level
+        assert set(groups) == {'t:one › a', 'b', 'c', 't:two'}
+        top = groups['t:one › a']
+        assert top[1] == ''                           # a first-level row
+        assert groups['b'][1] == top[0]               # b sits under it
+        assert top[2].startswith('3 metrics · 33% within tolerance · '
+                                 'worst -30.0% (b.y)')
+        assert top[3] == 'avg 14.0%'                  # (10 + 30 + 2) / 3
+        assert groups['b'][3] == 'avg 20.0%'
+        assert groups['t:two'][3] == 'avg 0.0%'
+        # Leaves hang below every level above them
+        assert re.search(r'<tr data-anc="%s %s"><td class="txt" '
+                         r'style="padding-left:50px"><span class="mname" '
+                         r'title="a.b.x">x</span>'
+                         % (top[0], groups['b'][0]), html_str)
+        assert 'class="tree-all" data-open="1"' in html_str
+
+    def test_level_history_is_mean_abs_delta(self, tmp_path):
+        model, hist = self._model(tmp_path, runs=2)
+        html_str = calibration.render_html(model, 'tree', history=hist)
+        m = re.search(r'<button type="button" class="gt" aria-expanded="true">'
+                      r'b</button>.*?<td class="dh" data-h="([^"]*)"',
+                      html_str)
+        points = json.loads(html.unescape(m.group(1)))
+        assert [p[0] for p in points] == [20.0, 25.0]   # (10+30)/2, (20+30)/2
+        assert [p[1] for p in points] == ['bad', 'bad']
 
 
 # ---------------------------------------------------------------------------

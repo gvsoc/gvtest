@@ -427,7 +427,7 @@ h1 { font-size:30px; line-height:1.15; margin:6px 0 4px; font-weight:650; }
   font-weight:600; }
 .toolbar { display:flex; gap:10px 28px; flex-wrap:wrap; align-items:center;
   margin:0 0 18px; font-size:13px; color:var(--ink-2); }
-.hwin { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.hwin, .bgroup { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .toolbar button { padding:3px 11px; font-size:12px; }
 .mname { font-weight:500; }
 .mdesc { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
@@ -439,6 +439,15 @@ details.mdoc > summary .mname::after { content:" \\25B8"; color:var(--accent);
 details.mdoc[open] > summary .mname::after { content:" \\25BE"; }
 details.mdoc > p { white-space:normal; max-width:72ch; margin:6px 0 4px;
   color:var(--ink-2); font-size:12.5px; line-height:1.5; }
+tr.collapsed { display:none; }
+tr.grow > td { background:var(--page); vertical-align:middle; }
+tr.grow button.gt { font:inherit; font-weight:650; color:var(--ink);
+  background:none; border:none; padding:0; cursor:pointer; text-align:left; }
+tr.grow button.gt::before { content:"\\25BE"; display:inline-block;
+  width:1.1em; color:var(--accent); }
+tr.grow button.gt[aria-expanded="false"]::before { content:"\\25B8"; }
+.gmeta { display:block; color:var(--muted); font-size:11.5px;
+  margin-left:1.1em; white-space:normal; }
 td.dh { padding:3px 10px; vertical-align:middle; }
 td.dh svg { display:block; overflow:hidden; }
 td.dh .band { fill:var(--ok-bg); }
@@ -743,16 +752,81 @@ def _improve_cell(cell: dict[str, Any] | None, grp: bool = False) -> str:
             f'title="{_esc(title)}">{pp:+.1f} pp</td>')
 
 
-def _metric_cell(metric: str, desc: str) -> str:
+def _indent(depth: int) -> str:
+    return f' style="padding-left:{10 + 20 * depth}px"' if depth else ''
+
+
+def _metric_cell(metric: str, desc: str, depth: int = 0) -> str:
     """Metric name over its one-sentence summary; the rest of the description
-    opens on click (a <details>, so it works without JavaScript too)."""
+    opens on click (a <details>, so it works without JavaScript too). In the
+    tree the levels above already carry the dotted prefix, so only the last
+    part of the name is shown; the full name is the tooltip."""
     summary, details = split_description(desc)
-    head = (f'<span class="mname">{_esc(metric)}</span>'
+    head = (f'<span class="mname" title="{_esc(metric)}">'
+            f'{_esc(metric.rsplit(".", 1)[-1])}</span>'
             f'<span class="mdesc">{_esc(summary)}</span>')
     if not details:
-        return f'<td class="txt">{head}</td>'
-    return (f'<td class="txt"><details class="mdoc"><summary>{head}</summary>'
-            f'<p>{_esc(details)}</p></details></td>')
+        return f'<td class="txt"{_indent(depth)}>{head}</td>'
+    return (f'<td class="txt"{_indent(depth)}><details class="mdoc"><summary>'
+            f'{head}</summary><p>{_esc(details)}</p></details></td>')
+
+
+def _build_tree(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Group the rows by test, then by the dotted parts of the metric name.
+
+    A level holding a single sub-level and no metric of its own is merged
+    into it ("el:dma_features › idma"), so every level shown is a real
+    choice. Sub-levels are sorted by name; the metrics inside a level keep
+    the rows' order (worst first).
+    """
+    root: dict[str, Any] = {'label': '', 'children': {}, 'rows': []}
+    for row in rows:
+        node = root
+        parts = row['metric'].split('.')[:-1]
+        for i, part in enumerate([row['test']] + parts):
+            # prefix: the part of the metric name this level stands for
+            node = node['children'].setdefault(part, {
+                'label': part, 'children': {}, 'rows': [],
+                'prefix': ''.join(p + '.' for p in parts[:i])})
+        node['rows'].append(row)
+
+    def merge(node: dict[str, Any]) -> dict[str, Any]:
+        while not node['rows'] and len(node['children']) == 1:
+            (sub,) = node['children'].values()
+            node = {'label': f"{node['label']} › {sub['label']}",
+                    'children': sub['children'], 'rows': sub['rows'],
+                    'prefix': sub['prefix']}
+        node['children'] = {k: merge(c) for k, c in
+                            sorted(node['children'].items())}
+        return node
+
+    root['children'] = {k: merge(c) for k, c in
+                        sorted(root['children'].items())}
+    return root
+
+
+def _tree_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
+    cells = [r['cells'][0] for r in node['rows'] if r['cells'][0] is not None]
+    for child in node['children'].values():
+        cells += _tree_cells(child)
+    return cells
+
+
+def _group_history(cells: list[dict[str, Any]],
+                   tol_pct: float) -> list[list[Any]]:
+    """Mean |Δ| of a level's metrics per run, in the per-row history format
+    ([value, severity, commit, timestamp]); a run counts the metrics it has."""
+    per_run: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for c in cells:
+        for delta, _, commit, ts in c.get('delta_history') or []:
+            per_run[(ts, commit)].append(abs(delta))
+    points = []
+    for (ts, commit), values in sorted(per_run.items()):
+        mean = statistics.mean(values)
+        sev = ('ok' if mean <= tol_pct
+               else 'warn' if mean <= 2 * tol_pct else 'bad')
+        points.append([round(mean, 3), sev, commit, ts])
+    return points
 
 
 def _history_cell(cell: dict[str, Any] | None) -> str:
@@ -766,7 +840,8 @@ def _history_cell(cell: dict[str, Any] | None) -> str:
             f'data-tol="{cell["tol_pct"]:g}"></td>')
 
 
-def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
+def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
+                    default_tol_pct: float = 5.0) -> str:
     targets = cluster['targets']
     stats = cluster['stats']
     # Only annotate_trends() sets delta_history (i.e. when history was built).
@@ -803,7 +878,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
            f'<h2>{_esc(title)}</h2>'
            f'<span class="sec-meta">{_esc(head_meta)}</span></div>'
            f'<div class="scroll"><table><thead><tr>'
-           f'<th class="txt">Test</th><th class="txt">Metric</th>']
+           f'<th class="txt">Test / metric</th>']
     # When a baseline was given, a per-metric "accuracy vs baseline" column
     # leads the movement group (so the trend columns drop their own border).
     impr_hdr = '<th class="grp">Δ acc vs base</th>' if show_improve else ''
@@ -828,8 +903,58 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
                    f'<th class="grp">Ref</th><th>Measured</th>'
                    '</tr></thead><tbody>')
 
-    prev_test = None
-    for row in cluster['rows']:
+    # Columns after the Δ (group) column(s) that a level row leaves blank.
+    n_rest = (1 if show_improve else 0) + (8 if spread else 4)
+    target = ' '.join(targets)
+    group_ids = iter(range(1, 1 << 30))
+
+    def group_row(node: dict[str, Any], key: str, gid: int, anc: str,
+                  depth: int) -> None:
+        cells = _tree_cells(node)
+        stats = _aggregate(cells)
+        meta = f"{stats['n_total']} metric{'s' if stats['n_total'] != 1 else ''}"
+        if stats['pct_ok'] is not None:
+            meta += f" · {stats['pct_ok']:.0f}% within tolerance"
+        worst = stats['worst']
+        if worst is not None and stats['n_referenced'] > 1:
+            name = worst['metric']
+            if name.startswith(node['prefix']):
+                name = name[len(node['prefix']):]
+            meta += f" · worst {_fmt_pct(worst['delta_pct'])} ({name})"
+        acc = stats['accuracy']
+        if acc is None:
+            delta_td = '<td class="num grp">—</td>'
+        else:
+            sev = ('ok' if acc <= default_tol_pct
+                   else 'warn' if acc <= 2 * default_tol_pct else 'bad')
+            delta_td = (f'<td class="num grp err {sev}" title="mean |Δ| of '
+                        f'{stats["n_accuracy"]} metric(s) against their '
+                        f'reference">avg {acc:.1f}%</td>')
+        out.append(f'<tr class="grow" data-gid="{gid}" '
+                   f'data-key="{_esc(key)}" data-anc="{anc}">'
+                   f'<td class="txt tree"{_indent(depth)}>'
+                   f'<button type="button" class="gt" aria-expanded="true">'
+                   f'{_esc(node["label"])}</button>'
+                   f'<span class="gmeta">{_esc(meta)}</span></td>'
+                   f'{delta_td}')
+        if spread:
+            out.append('<td colspan="2"></td>')
+        if with_history:
+            points = _group_history(cells, default_tol_pct)
+            out.append(_history_cell({'delta_history': points,
+                                      'tol_pct': default_tol_pct}))
+        out.append(f'<td colspan="{n_rest}"></td></tr>')
+
+    def walk(node: dict[str, Any], key: str, anc: str, depth: int) -> None:
+        for child in node['children'].values():
+            child_key = f"{key}|{child['label']}"
+            gid = next(group_ids)
+            group_row(child, child_key, gid, anc, depth)
+            walk(child, child_key, f'{anc} {gid}'.strip(), depth + 1)
+        for row in node['rows']:
+            leaf_row(row, anc, depth)
+
+    def leaf_row(row: dict[str, Any], anc: str, depth: int) -> None:
         cells = row['cells']
         cell0 = cells[0]
         ref_txt = ('—' if cell0 is None or cell0['ref'] is None
@@ -837,10 +962,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
         ref_title = ('' if cell0 is None
                      else f' title="{_esc(_cell_title(cell0))}"')
         row_class = '' if row['referenced'] else ' class="mo"'
-        test_txt = '' if row['test'] == prev_test else _esc(row['test'])
-        prev_test = row['test']
-        out.append(f'<tr{row_class}><td class="test">{test_txt}</td>'
-                   f'{_metric_cell(row["metric"], row["desc"])}')
+        out.append(f'<tr{row_class} data-anc="{anc}">'
+                   f'{_metric_cell(row["metric"], row["desc"], depth)}')
         if spread:
             cell = cells[0]
             title = f' title="{_esc(_cell_title(cell))}"' if cell else ''
@@ -873,6 +996,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
             out.append(f'<td class="num grp"{ref_title}>{_esc(ref_txt)}</td>')
             out.append(_value_cell(cells[0], grp=False))
         out.append('</tr>')
+
+    walk(_build_tree(cluster['rows']), target, '', 0)
     out.append('</tbody></table></div></section>')
     return ''.join(out)
 
@@ -1005,7 +1130,7 @@ _HIST_JS = r"""
   'use strict';
   var cells = document.querySelectorAll('td.dh[data-h]');
   var btns = Array.prototype.slice.call(
-      document.querySelectorAll('.hwin button'));
+      document.querySelectorAll('.hwin button[data-n]'));
   if (!cells.length) return;
   var W = 120, H = 26, P = 3;
 
@@ -1084,6 +1209,61 @@ _HIST_JS = r"""
     })) n = +saved;
   } catch (e) {}
   apply(n);
+})();
+"""
+
+# Opening and closing the levels of the tables. A row is shown when every
+# level above it is open; each level's state is remembered per browser under
+# its target|test|... key. Everything starts closed below the test level.
+_TREE_JS = r"""
+(function () {
+  'use strict';
+  var groups = Array.prototype.slice.call(document.querySelectorAll('tr.grow'));
+  if (!groups.length) return;
+  var rows = document.querySelectorAll('tr[data-anc]');
+  var KEY = 'calib-open';
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+  catch (e) {}
+  var open = {};
+  groups.forEach(function (g) {
+    open[g.getAttribute('data-gid')] = saved[g.getAttribute('data-key')] === true;
+  });
+
+  function refresh() {
+    Array.prototype.forEach.call(rows, function (r) {
+      var anc = r.getAttribute('data-anc');
+      var shown = !anc || anc.split(' ').every(function (a) { return open[a]; });
+      r.classList.toggle('collapsed', !shown);
+    });
+    groups.forEach(function (g) {
+      g.querySelector('button.gt').setAttribute('aria-expanded',
+          String(open[g.getAttribute('data-gid')]));
+    });
+  }
+  function save() {
+    groups.forEach(function (g) {
+      saved[g.getAttribute('data-key')] = open[g.getAttribute('data-gid')];
+    });
+    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+  }
+  groups.forEach(function (g) {
+    g.querySelector('button.gt').addEventListener('click', function () {
+      var id = g.getAttribute('data-gid');
+      open[id] = !open[id];
+      refresh();
+      save();
+    });
+  });
+  document.querySelectorAll('button.tree-all').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var state = b.getAttribute('data-open') === '1';
+      groups.forEach(function (g) { open[g.getAttribute('data-gid')] = state; });
+      refresh();
+      save();
+    });
+  });
+  refresh();
 })();
 """
 
@@ -1479,8 +1659,15 @@ def render_html(model: dict[str, Any], title: str,
     if any(split_description(c['desc'])[1] for c in model['cells']):
         docs_html = ('<button type="button" class="docs-all" '
                      'aria-pressed="false">Show all descriptions</button>')
-    tools_html = (f'<div class="toolbar">{hwin_html}{docs_html}</div>'
-                  if hwin_html or docs_html else '')
+    tree_html = ''
+    if model['cells']:
+        tree_html = ('<div class="bgroup" role="group" aria-label="Levels">'
+                     '<button type="button" class="tree-all" data-open="1">'
+                     'Expand all</button>'
+                     '<button type="button" class="tree-all" data-open="0">'
+                     'Collapse all</button></div>')
+    tools_html = (f'<div class="toolbar">{hwin_html}{tree_html}{docs_html}'
+                  '</div>' if hwin_html or tree_html or docs_html else '')
 
     acc_txt = (f"{g['accuracy']:.1f}<small>%</small>"
                if g['accuracy'] is not None else '—')
@@ -1561,7 +1748,8 @@ def render_html(model: dict[str, Any], title: str,
             '<th class="txt">Target</th><th>Measured metrics</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div></section>')
 
-    sections = ''.join(_render_cluster(c, show_improve=improvement is not None)
+    sections = ''.join(_render_cluster(c, show_improve=improvement is not None,
+                                       default_tol_pct=default_tol_pct)
                        for c in model['clusters'])
 
     client_json = json.dumps(_client_data(model)).replace('</', '<\\/')
@@ -1594,7 +1782,7 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}{_HIST_JS}{_DOCS_JS}</script>
+<script>{_JS}{_HIST_JS}{_TREE_JS}{_DOCS_JS}</script>
 </body></html>
 """
 

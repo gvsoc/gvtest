@@ -682,7 +682,7 @@ class TestCalibrationHistory:
         assert cell['tol_pct'] == 5.0     # declared tol 5 on a ref of 100
 
         html_str = calibration.render_html(model, 'hist', history=hist)
-        assert '<th class="txt">Δ history</th>' in html_str
+        assert '<th class="txt">Δ history · trend</th>' in html_str
         m = re.search(r'<td class="dh" data-h="([^"]*)" data-tol="5">',
                       html_str)
         assert json.loads(html.unescape(m.group(1))) == cell['delta_history']
@@ -691,6 +691,24 @@ class TestCalibrationHistory:
             assert f'data-n="{n}"' in html_str
         assert 'data-n="10" aria-pressed="true"' in html_str
         assert 'td.dh[data-h]' in html_str      # the drawing script
+
+    def test_trend_icons(self, tmp_path):
+        db = self._db(tmp_path, [100, 104, 130])
+        conn = sqlite3.connect(db)
+        rows = calibration.query_results(conn)
+        hist = calibration.build_history(calibration.query_history(conn))
+        conn.close()
+        model = calibration.build_model(rows)
+        calibration.annotate_trends(model, hist)
+        html_str = calibration.render_html(model, 'hist', history=hist)
+        # Legend with the three icons, and the icons handed to the script
+        legend = re.search(r'<div class="legend tlegend">(.*?)</div>',
+                           html_str).group(1)
+        for kind, word in (('imp', 'improving'), ('stable', 'stable'),
+                           ('worse', 'getting worse')):
+            assert f'<svg class="tr {kind}"' in legend and word in legend
+        assert '__TREND_ICONS__' not in html_str
+        assert 'var ICONS = {"imp": "<svg class=\\"tr imp\\"' in html_str
 
     def test_delta_history_absent_without_trends(self, tmp_path):
         # History column and window selector only appear once trends are
@@ -702,6 +720,7 @@ class TestCalibrationHistory:
         html_str = calibration.render_html(model, 'no history')
         assert 'Δ history</th>' not in html_str
         assert 'class="hwin"' not in html_str
+        assert '<div class="legend tlegend">' not in html_str
 
 
 class TestCalibrationRender:

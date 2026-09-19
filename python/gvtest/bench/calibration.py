@@ -457,8 +457,18 @@ tr.grow button.gt::before { content:"\\25BE"; display:inline-block;
 tr.grow button.gt[aria-expanded="false"]::before { content:"\\25B8"; }
 .gmeta { display:block; color:var(--muted); font-size:11.5px;
   margin-left:1.1em; white-space:normal; }
-td.dh { padding:3px 10px; vertical-align:middle; }
-td.dh svg { display:block; overflow:hidden; }
+td.dh { padding:3px 10px; vertical-align:middle; white-space:nowrap; }
+td.dh > svg { display:inline-block; vertical-align:middle; overflow:hidden; }
+.trw { display:inline-block; vertical-align:middle; margin-left:8px; }
+.tr { display:inline-block; vertical-align:middle; }
+.tr .ar { fill:none; stroke-width:1.8; stroke-linecap:round;
+  stroke-linejoin:round; }
+.tr.imp .bg { fill:var(--ok-bg); } .tr.imp .ar { stroke:var(--ok-text); }
+.tr.stable .bg { fill:var(--grid); } .tr.stable .ar { stroke:var(--ink-2); }
+.tr.worse .bg { fill:var(--bad-bg); } .tr.worse .ar { stroke:var(--bad-text); }
+.tlegend { margin-top:-18px; align-items:center; }
+.tlegend .tr { margin-right:6px; }
+.tlegend .note { margin:0; }
 td.dh .band { fill:var(--ok-bg); }
 td.dh .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 2; }
 td.dh .line { fill:none; stroke:var(--ink-2); stroke-width:1.5; }
@@ -868,7 +878,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
     # Only annotate_trends() sets delta_history (i.e. when history was built).
     with_history = any(c is not None and 'delta_history' in c
                        for row in cluster['rows'] for c in row['cells'])
-    hist_hdr = '<th class="txt">Δ history</th>' if with_history else ''
+    hist_hdr = ('<th class="txt">Δ history · trend</th>'
+                if with_history else '')
 
     window_days = next((c['trend_window_days'] for row in cluster['rows']
                         for c in row['cells']
@@ -1143,6 +1154,20 @@ _JS = """
 """
 
 
+# Trend icons, shared by the legend and the rows (handed to _HIST_JS below).
+def _trend_icon(kind: str, arrow: str) -> str:
+    return (f'<svg class="tr {kind}" width="16" height="16" '
+            f'viewBox="0 0 16 16" aria-hidden="true"><circle class="bg" '
+            f'cx="8" cy="8" r="8"/><path class="ar" d="{arrow}"/></svg>')
+
+
+_TREND_ICONS = {
+    'imp': _trend_icon('imp', 'M4.5 11.5 L11.5 4.5 M6.5 4.5 H11.5 V9.5'),
+    'stable': _trend_icon('stable', 'M3.5 8 H12.5 M9 4.5 L12.5 8 L9 11.5'),
+    'worse': _trend_icon('worse', 'M4.5 4.5 L11.5 11.5 M11.5 6.5 V11.5 H6.5'),
+}
+
+
 # Δ-history sparklines: one per table row, redrawn over the last N runs picked
 # with the .hwin buttons (N = 0 means every run). The choice is remembered per
 # browser. Each point carries [Δ%, severity, commit, timestamp].
@@ -1160,6 +1185,28 @@ _HIST_JS = r"""
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function fmt(d) { return (d >= 0 ? '+' : '') + d.toFixed(1) + '%'; }
+
+  // Improving / stable / getting worse: the latest |Δ| against the median
+  // |Δ| of the earlier runs of the window, stable within half the tolerance
+  // (above the 1-2% run-to-run jitter code layout can cause). The median
+  // keeps one noisy run from flipping the verdict.
+  var ICONS = __TREND_ICONS__;
+  var WORDS = {imp: 'improving', stable: 'stable', worse: 'getting worse'};
+  function trend(pts, tol) {
+    if (pts.length < 2) return '';
+    var v = pts.map(function (p) { return Math.abs(p[0]); });
+    var last = v[v.length - 1];
+    var prev = v.slice(0, -1).sort(function (a, b) { return a - b; });
+    var h = prev.length >> 1;
+    var med = prev.length % 2 ? prev[h] : (prev[h - 1] + prev[h]) / 2;
+    var thr = Math.max(tol / 2, 0.1);
+    var kind = last < med - thr ? 'imp' : (last > med + thr ? 'worse' : 'stable');
+    var title = WORDS[kind] + ': |Δ| ' + last.toFixed(1) + '% vs ' +
+        med.toFixed(1) + '% (median of the previous ' + prev.length +
+        ' run' + (prev.length > 1 ? 's' : '') + ')';
+    return '<span class="trw" title="' + esc(title) + '">' + ICONS[kind] +
+        '</span>';
+  }
 
   function draw(td, n) {
     var all = JSON.parse(td.getAttribute('data-h'));
@@ -1206,7 +1253,7 @@ _HIST_JS = r"""
           esc(fmt(p[0]) + ' · ' + p[2] + ' · ' +
               p[3].replace('T', ' ')) + '</title></circle>';
     });
-    td.innerHTML = s + '</svg>';
+    td.innerHTML = s + '</svg>' + trend(pts, tol);
   }
 
   function apply(n) {
@@ -1802,6 +1849,18 @@ def render_html(model: dict[str, Any], title: str,
     tools_html = (f'<div class="toolbar">{hwin_html}{tree_html}{docs_html}'
                   '</div>' if hwin_html or tree_html or docs_html else '')
 
+    trend_legend = ''
+    if hwin_html:
+        trend_legend = (
+            '<div class="legend tlegend">'
+            + ''.join(f'<span>{_TREND_ICONS[k]}{label}</span>'
+                      for k, label in (('imp', 'improving'),
+                                       ('stable', 'stable'),
+                                       ('worse', 'getting worse')))
+            + '<span class="note">trend: the latest |Δ| against the median '
+              'of the earlier runs of the Δ history window; stable within half '
+              'the tolerance</span></div>')
+
     acc_txt = (f"{g['accuracy']:.1f}<small>%</small>"
                if g['accuracy'] is not None else '—')
 
@@ -1828,7 +1887,7 @@ def render_html(model: dict[str, Any], title: str,
   <span><i style="background:var(--warn)"></i>≤ 2× tolerance</span>
   <span><i style="background:var(--bad)"></i>&gt; 2× tolerance</span>
   <span><i style="background:var(--muted)"></i>measured-only (no reference)</span>
-</div>
+</div>{trend_legend}
 """
 
     scoreboard = ['<section><div class="sec-head"><h2>Per-target scoreboard'
@@ -1915,7 +1974,7 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}{_HIST_JS}{_TREE_JS}{_VCHART_JS}{_DOCS_JS}</script>
+<script>{_JS}{_HIST_JS.replace('__TREND_ICONS__', json.dumps(_TREND_ICONS))}{_TREE_JS}{_VCHART_JS}{_DOCS_JS}</script>
 </body></html>
 """
 

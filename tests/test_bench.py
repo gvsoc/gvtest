@@ -148,6 +148,65 @@ class TestReportRender:
 
 
 # ---------------------------------------------------------------------------
+# Benchmark descriptions: summary inline, details on demand
+# ---------------------------------------------------------------------------
+
+_LONG_DESC = ('Cycles of one 4 KB copy. The core programs the copy and polls '
+              'its end. The reference is the RTL.')
+
+
+class TestDescriptions:
+
+    def test_split_description(self):
+        from gvtest.bench import split_description
+        assert split_description(_LONG_DESC) == (
+            'Cycles of one 4 KB copy.',
+            'The core programs the copy and polls its end. The reference is '
+            'the RTL.')
+        assert split_description('cluster DMA priv (cycles)') == \
+            ('cluster DMA priv (cycles)', '')
+        assert split_description(None) == ('', '')
+
+    def _model(self, tmp_path, desc):
+        db = _make_db(tmp_path, [_run([
+            {**_result('t:a', 'tgt', 'long', 110, ref=100, src='rtl'),
+             'description': desc},
+            _result('t:a', 'tgt', 'short', 100, ref=100, src='rtl')])])
+        conn = sqlite3.connect(db)
+        model = calibration.build_model(calibration.query_results(conn))
+        conn.close()
+        return model
+
+    def test_calibration_cell_summary_and_details(self, tmp_path):
+        html_str = calibration.render_html(
+            self._model(tmp_path, _LONG_DESC), 'descs')
+        # Long description: summary in the row, the rest behind a <details>
+        assert ('<details class="mdoc"><summary><span class="mname">long'
+                '</span><span class="mdesc">Cycles of one 4 KB copy.</span>'
+                '</summary><p>The core programs the copy and polls its end. '
+                'The reference is the RTL.</p></details>') in html_str
+        # One-sentence description: no <details>
+        assert ('<td class="txt"><span class="mname">short</span>'
+                '<span class="mdesc">short</span></td>') in html_str
+        assert 'class="docs-all"' in html_str
+
+    def test_no_docs_button_without_details(self, tmp_path):
+        html_str = calibration.render_html(
+            self._model(tmp_path, 'Just a summary'), 'descs')
+        assert 'class="docs-all"' not in html_str
+        assert '<details class="mdoc">' not in html_str
+
+    def test_trend_report_shows_summary(self):
+        from gvtest.bench.report import render_report_html
+        trends = {'t:a': {'grp.cycles': {'desc': _LONG_DESC, 'targets': {
+            'tgt': {'timestamps': ['2026-07-16T10:00:00+00:00'],
+                    'values': [1.0], 'commits': ['c0ffee0']}}}}}
+        html_str = render_report_html(trends)
+        assert (f'<td title="{html.escape(_LONG_DESC)}">Cycles of one 4 KB '
+                'copy.</td>') in html_str
+
+
+# ---------------------------------------------------------------------------
 # Bench server upload client
 # ---------------------------------------------------------------------------
 

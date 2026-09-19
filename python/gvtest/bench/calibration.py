@@ -48,6 +48,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from gvtest.bench import split_description
+
 # (test, target, metric)
 Key = tuple[str, str, str]
 
@@ -414,18 +416,29 @@ h1 { font-size:30px; line-height:1.15; margin:6px 0 4px; font-weight:650; }
 .legend i { display:inline-block; width:10px; height:10px; border-radius:2px;
   margin-right:6px; vertical-align:-1px; }
 .filters { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 18px; }
-.filters button, .hwin button {
+.filters button, .toolbar button {
   font:13px system-ui,-apple-system,"Segoe UI",sans-serif;
   padding:5px 14px; border-radius:16px; border:1px solid var(--grid);
   background:var(--surface); color:var(--ink-2); cursor:pointer; }
-.filters button:hover, .hwin button:hover { border-color:var(--accent);
+.filters button:hover, .toolbar button:hover { border-color:var(--accent);
   color:var(--accent); }
-.filters button[aria-pressed="true"], .hwin button[aria-pressed="true"] {
+.filters button[aria-pressed="true"], .toolbar button[aria-pressed="true"] {
   background:var(--accent); border-color:var(--accent); color:#fff;
   font-weight:600; }
-.hwin { display:flex; gap:6px; flex-wrap:wrap; align-items:center;
+.toolbar { display:flex; gap:10px 28px; flex-wrap:wrap; align-items:center;
   margin:0 0 18px; font-size:13px; color:var(--ink-2); }
-.hwin button { padding:3px 11px; font-size:12px; }
+.hwin { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.toolbar button { padding:3px 11px; font-size:12px; }
+.mname { font-weight:500; }
+.mdesc { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
+  white-space:normal; max-width:72ch; }
+details.mdoc > summary { cursor:pointer; list-style:none; }
+details.mdoc > summary::-webkit-details-marker { display:none; }
+details.mdoc > summary .mname::after { content:" \\25B8"; color:var(--accent);
+  font-size:11px; }
+details.mdoc[open] > summary .mname::after { content:" \\25BE"; }
+details.mdoc > p { white-space:normal; max-width:72ch; margin:6px 0 4px;
+  color:var(--ink-2); font-size:12.5px; line-height:1.5; }
 td.dh { padding:3px 10px; vertical-align:middle; }
 td.dh svg { display:block; overflow:hidden; }
 td.dh .band { fill:var(--ok-bg); }
@@ -471,7 +484,6 @@ td { padding:6px 10px; border-bottom:1px solid var(--grid);
 tbody tr:last-child td { border-bottom:none; }
 td.test { font-weight:600; white-space:nowrap; }
 td.txt { white-space:nowrap; }
-.mdesc { color:var(--muted); font-size:11.5px; margin-left:7px; }
 td.num { text-align:right;
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:12.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -731,6 +743,18 @@ def _improve_cell(cell: dict[str, Any] | None, grp: bool = False) -> str:
             f'title="{_esc(title)}">{pp:+.1f} pp</td>')
 
 
+def _metric_cell(metric: str, desc: str) -> str:
+    """Metric name over its one-sentence summary; the rest of the description
+    opens on click (a <details>, so it works without JavaScript too)."""
+    summary, details = split_description(desc)
+    head = (f'<span class="mname">{_esc(metric)}</span>'
+            f'<span class="mdesc">{_esc(summary)}</span>')
+    if not details:
+        return f'<td class="txt">{head}</td>'
+    return (f'<td class="txt"><details class="mdoc"><summary>{head}</summary>'
+            f'<p>{_esc(details)}</p></details></td>')
+
+
 def _history_cell(cell: dict[str, Any] | None) -> str:
     """Δ over the recent runs; the sparkline is drawn client-side (_HIST_JS)
     so the run window can be changed without regenerating the page."""
@@ -816,8 +840,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False) -> str:
         test_txt = '' if row['test'] == prev_test else _esc(row['test'])
         prev_test = row['test']
         out.append(f'<tr{row_class}><td class="test">{test_txt}</td>'
-                   f'<td class="txt">{_esc(row["metric"])}'
-                   f'<span class="mdesc">{_esc(row["desc"])}</span></td>')
+                   f'{_metric_cell(row["metric"], row["desc"])}')
         if spread:
             cell = cells[0]
             title = f' title="{_esc(_cell_title(cell))}"' if cell else ''
@@ -1061,6 +1084,23 @@ _HIST_JS = r"""
     })) n = +saved;
   } catch (e) {}
   apply(n);
+})();
+"""
+
+# Opens or closes every metric description at once.
+_DOCS_JS = r"""
+(function () {
+  'use strict';
+  var b = document.querySelector('button.docs-all');
+  if (!b) return;
+  b.addEventListener('click', function () {
+    var open = b.getAttribute('aria-pressed') !== 'true';
+    b.setAttribute('aria-pressed', String(open));
+    b.textContent = open ? 'Hide all descriptions' : 'Show all descriptions';
+    document.querySelectorAll('details.mdoc').forEach(function (d) {
+      d.open = open;
+    });
+  });
 })();
 """
 
@@ -1435,12 +1475,18 @@ def render_html(model: dict[str, Any], title: str,
                       for n, label in ((5, 'last 5'), (10, 'last 10'),
                                        (100, 'last 100'), (0, 'all')))
             + '</div>')
+    docs_html = ''
+    if any(split_description(c['desc'])[1] for c in model['cells']):
+        docs_html = ('<button type="button" class="docs-all" '
+                     'aria-pressed="false">Show all descriptions</button>')
+    tools_html = (f'<div class="toolbar">{hwin_html}{docs_html}</div>'
+                  if hwin_html or docs_html else '')
 
     acc_txt = (f"{g['accuracy']:.1f}<small>%</small>"
                if g['accuracy'] is not None else '—')
 
     stats_html = f"""
-{filters_html}{hwin_html}
+{filters_html}{tools_html}
 <div class="strip">
   <div class="stat"><div class="v" id="t-acc">{acc_txt}</div>
     <div class="k">accuracy — mean |Δ| vs reference
@@ -1548,7 +1594,7 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}{_HIST_JS}</script>
+<script>{_JS}{_HIST_JS}{_DOCS_JS}</script>
 </body></html>
 """
 

@@ -28,12 +28,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+from gvtest.bench import split_description
 
 
 def query_trends(
@@ -99,6 +102,7 @@ def query_trends(
         if metric not in trends[test_name]:
             trends[test_name][metric] = {
                 'desc': desc or metric,
+                'summary': split_description(desc or metric)[0],
                 'targets': {},
             }
         metric_data = trends[test_name][metric]['targets']
@@ -383,6 +387,9 @@ def _build_test_sections(trends: dict) -> str:
             metric_rows = []
             for metric_name, metric_data in group_metrics:
                 _, short_name = _split_metric(metric_name)
+                desc = metric_data['desc']
+                summary = (metric_data.get('summary')
+                           or split_description(desc)[0])
                 for tgt in sorted(metric_data['targets'].keys()):
                     data = metric_data['targets'][tgt]
                     latest = data['values'][-1] if data['values'] else None
@@ -390,7 +397,8 @@ def _build_test_sections(trends: dict) -> str:
                     info = _trend_info(data['values'], data['timestamps'])
                     metric_rows.append(
                         f'<tr class="metric-row" data-target="{tgt}">'
-                        f'<td>{metric_data["desc"]}</td>'
+                        f'<td title="{html.escape(desc)}">'
+                        f'{html.escape(summary)}</td>'
                         f'<td><code>{short_name}</code></td>'
                         f'<td>{tgt}</td>'
                         f'<td class="num">{val_str}</td>'
@@ -651,7 +659,7 @@ function renderCharts(targetFilter) {
       const shortName = metricName.includes('.') ? metricName.split('.').slice(1).join('.') : metricName;
 
       Plotly.react(divId, traces, {
-        title: { text: metric.desc || shortName, font: { size: 12 } },
+        title: { text: metric.summary || metric.desc || shortName, font: { size: 12 } },
         xaxis: { title: '', tickfont: { size: 10 } },
         yaxis: { title: shortName, tickfont: { size: 10 } },
         margin: { t: 28, b: 36, l: 50, r: 10 },

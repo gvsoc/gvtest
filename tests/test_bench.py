@@ -256,7 +256,8 @@ class TestCalibrationTree:
         assert groups['t:two'][3] == 'avg 0.0%'
         # Leaves hang below every level above them
         assert re.search(r'<tr data-anc="%s %s"><td class="txt" '
-                         r'style="padding-left:50px"><span class="mname" '
+                         r'style="padding-left:50px"><details class="mdoc">'
+                         r'<summary><span class="mname" '
                          r'title="a.b.x">x</span>'
                          % (top[0], groups['b'][0]), html_str)
         assert 'class="tree-all" data-open="1"' in html_str
@@ -270,6 +271,20 @@ class TestCalibrationTree:
         points = json.loads(html.unescape(m.group(1)))
         assert [p[0] for p in points] == [20.0, 25.0]   # (10+30)/2, (20+30)/2
         assert [p[1] for p in points] == ['bad', 'bad']
+
+    def test_value_chart_in_description(self, tmp_path):
+        # a.b.x has a one-sentence description (its name), but a history:
+        # it still opens, onto the chart of its value against the reference.
+        model, hist = self._model(tmp_path, runs=2)
+        html_str = calibration.render_html(model, 'tree', history=hist)
+        m = re.search(r'title="a\.b\.x">x</span><span class="mdesc">a\.b\.x'
+                      r'</span></summary><div class="vchart" data-v="([^"]*)" '
+                      r'data-ref="RTL"></div></details>', html_str)
+        values = json.loads(html.unescape(m.group(1)))
+        assert [v[:2] for v in values] == [[110.0, 100.0], [120.0, 100.0]]
+        assert [v[3] for v in values] == ['2026-07-16T10:00',
+                                          '2026-07-17T10:00']
+        assert "det.querySelector('.vchart')" in html_str   # the drawing
 
 
 # ---------------------------------------------------------------------------

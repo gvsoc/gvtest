@@ -439,6 +439,15 @@ details.mdoc > summary .mname::after { content:" \\25B8"; color:var(--accent);
 details.mdoc[open] > summary .mname::after { content:" \\25BE"; }
 details.mdoc > p { white-space:normal; max-width:72ch; margin:6px 0 4px;
   color:var(--ink-2); font-size:12.5px; line-height:1.5; }
+.vchart { margin:8px 0 4px; }
+.vchart svg { display:block; max-width:100%; height:auto; }
+.vchart .vg { stroke:var(--grid); stroke-width:1; }
+.vchart .vv { fill:none; stroke:var(--accent); stroke-width:2; }
+.vchart .vp { fill:var(--accent); }
+.vchart .vr { fill:none; stroke:var(--ink-2); stroke-width:1.5;
+  stroke-dasharray:5 3; }
+.vchart text { fill:var(--muted); font:11px system-ui,-apple-system,sans-serif; }
+.vchart text.lv { fill:var(--accent); } .vchart text.lr { fill:var(--ink-2); }
 tr.collapsed { display:none; }
 tr.grow > td { background:var(--page); vertical-align:middle; }
 tr.grow button.gt { font:inherit; font-weight:650; color:var(--ink);
@@ -756,19 +765,31 @@ def _indent(depth: int) -> str:
     return f' style="padding-left:{10 + 20 * depth}px"' if depth else ''
 
 
-def _metric_cell(metric: str, desc: str, depth: int = 0) -> str:
+_REF_LABELS = {'rtl': 'RTL', 'analytical': 'analytical', 'measured': 'locked'}
+
+
+def _metric_cell(metric: str, desc: str, depth: int = 0,
+                 cell: dict[str, Any] | None = None) -> str:
     """Metric name over its one-sentence summary; the rest of the description
-    opens on click (a <details>, so it works without JavaScript too). In the
+    and a chart of the measured value against its reference over the runs
+    open on click (a <details>; the chart is drawn by _VCHART_JS). In the
     tree the levels above already carry the dotted prefix, so only the last
     part of the name is shown; the full name is the tooltip."""
     summary, details = split_description(desc)
     head = (f'<span class="mname" title="{_esc(metric)}">'
             f'{_esc(metric.rsplit(".", 1)[-1])}</span>'
             f'<span class="mdesc">{_esc(summary)}</span>')
-    if not details:
+    values = cell.get('value_history') if cell else None
+    if not details and not values:
         return f'<td class="txt"{_indent(depth)}>{head}</td>'
+    body = f'<p>{_esc(details)}</p>' if details else ''
+    if values:
+        label = _REF_LABELS.get(cell.get('ref_type'), 'reference')
+        data = json.dumps(values, separators=(',', ':'))
+        body += (f'<div class="vchart" data-v="{_esc(data)}" '
+                 f'data-ref="{_esc(label)}"></div>')
     return (f'<td class="txt"{_indent(depth)}><details class="mdoc"><summary>'
-            f'{head}</summary><p>{_esc(details)}</p></details></td>')
+            f'{head}</summary>{body}</details></td>')
 
 
 def _build_tree(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -963,7 +984,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
                      else f' title="{_esc(_cell_title(cell0))}"')
         row_class = '' if row['referenced'] else ' class="mo"'
         out.append(f'<tr{row_class} data-anc="{anc}">'
-                   f'{_metric_cell(row["metric"], row["desc"], depth)}')
+                   f'{_metric_cell(row["metric"], row["desc"], depth, cell0)}')
         if spread:
             cell = cells[0]
             title = f' title="{_esc(_cell_title(cell))}"' if cell else ''
@@ -1267,6 +1288,111 @@ _TREE_JS = r"""
 })();
 """
 
+# The chart in a metric's description: measured value (solid) and reference
+# (dashed, stepping when it is re-measured) over the runs picked by the Δ
+# history window. Drawn when the description opens, redrawn when the window
+# changes. Each point carries [measured, reference, commit, timestamp].
+_VCHART_JS = r"""
+(function () {
+  'use strict';
+  var W = 560, H = 170, L = 60, R = 12, T = 22, B = 24;
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function fmt(v) {
+    if (v === null) return '-';
+    return Math.abs(v) >= 1000 ? v.toFixed(0) : String(+v.toPrecision(4));
+  }
+  function windowSize() {
+    var b = document.querySelector('.hwin button[data-n][aria-pressed="true"]');
+    return b ? +b.getAttribute('data-n') : 0;
+  }
+
+  function draw(div) {
+    var all = JSON.parse(div.getAttribute('data-v'));
+    var n = windowSize();
+    var pts = n > 0 ? all.slice(-n) : all;
+    var ref = div.getAttribute('data-ref');
+    var ys = [];
+    pts.forEach(function (p) { ys.push(p[0]); if (p[1] !== null) ys.push(p[1]); });
+    var lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
+    if (hi - lo < 1e-9) { var m = Math.abs(hi) * 0.05 || 1; lo -= m; hi += m; }
+    var pad = (hi - lo) * 0.1;
+    lo -= pad; hi += pad;
+    function x(i) {
+      return pts.length < 2 ? (L + W - R) / 2
+          : L + i * (W - L - R) / (pts.length - 1);
+    }
+    function y(v) { return T + (hi - v) / (hi - lo) * (H - T - B); }
+
+    var s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W +
+        ' ' + H + '" role="img">';
+    [hi - pad, (hi + lo) / 2, lo + pad].forEach(function (v) {
+      s += '<line class="vg" x1="' + L + '" x2="' + (W - R) + '" y1="' +
+          y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/><text x="' +
+          (L - 6) + '" y="' + (y(v) + 4).toFixed(1) +
+          '" text-anchor="end">' + esc(fmt(v)) + '</text>';
+    });
+    s += '<text x="' + L + '" y="' + (H - 6) + '">' +
+        esc(pts[0][3].slice(0, 10)) + '</text>';
+    if (pts.length > 1) {
+      s += '<text x="' + (W - R) + '" y="' + (H - 6) +
+          '" text-anchor="end">' + esc(pts[pts.length - 1][3].slice(0, 10)) +
+          '</text>';
+    }
+    // Reference: a step line, held until the next run that re-states it.
+    var d = '';
+    pts.forEach(function (p, i) {
+      if (p[1] === null) return;
+      var X = x(i).toFixed(1), Y = y(p[1]).toFixed(1);
+      d += d ? ' H' + X + ' V' + Y : 'M' + X + ',' + Y;
+    });
+    if (pts.length === 1 && pts[0][1] !== null) {
+      d = 'M' + L + ',' + y(pts[0][1]).toFixed(1) + ' H' + (W - R);
+    }
+    if (d) s += '<path class="vr" d="' + d + '"/>';
+    if (pts.length > 1) {
+      s += '<polyline class="vv" points="' + pts.map(function (p, i) {
+        return x(i).toFixed(1) + ',' + y(p[0]).toFixed(1);
+      }).join(' ') + '"/>';
+    }
+    pts.forEach(function (p, i) {
+      var t = p[2] + ' · ' + p[3].replace('T', ' ') + ' · gvsoc ' +
+          fmt(p[0]);
+      if (p[1] !== null) {
+        t += ' · ' + ref + ' ' + fmt(p[1]);
+        if (p[1]) {
+          var dp = (p[0] - p[1]) / Math.abs(p[1]) * 100;
+          t += ' (Δ ' + (dp >= 0 ? '+' : '') + dp.toFixed(1) + '%)';
+        }
+      }
+      s += '<circle class="vp" cx="' + x(i).toFixed(1) + '" cy="' +
+          y(p[0]).toFixed(1) + '" r="3"><title>' + esc(t) +
+          '</title></circle>';
+    });
+    s += '<text class="lv" x="' + L + '" y="12">— gvsoc</text>' +
+        '<text class="lr" x="' + (L + 64) + '" y="12">- - ' + esc(ref) +
+        '</text></svg>';
+    div.innerHTML = s;
+  }
+
+  document.querySelectorAll('details.mdoc').forEach(function (det) {
+    var div = det.querySelector('.vchart');
+    if (!div) return;
+    function show() { if (det.open) draw(div); }
+    det.addEventListener('toggle', show);
+    show();
+  });
+  document.querySelectorAll('.hwin button[data-n]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('details.mdoc[open] .vchart').forEach(draw);
+    });
+  });
+})();
+"""
+
 # Opens or closes every metric description at once.
 _DOCS_JS = r"""
 (function () {
@@ -1354,6 +1480,8 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
     in the `window_days` before the current one (the recent norm).
     delta_history: [Δ%, severity, commit, timestamp] per run, oldest first,
     with tol_pct the tolerance band it is judged against.
+    value_history: [measured, reference, commit, timestamp] per run, the
+    absolute values behind delta_history.
     """
     default_tol_pct = model['default_tol_pct']
     for cell in model['cells']:
@@ -1364,6 +1492,10 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
             (cell['test'], cell['target'], cell['metric'])) or []
         cell['delta_history'] = [
             [round(p['delta_pct'], 3), p['severity'],
+             (p['git_commit'] or '')[:8], (p['timestamp'] or '')[:16]]
+            for p in points]
+        cell['value_history'] = [
+            [p['value'], p['ref'],
              (p['git_commit'] or '')[:8], (p['timestamp'] or '')[:16]]
             for p in points]
         cell['tol_pct'] = (abs(cell['tol'] / cell['ref']) * 100
@@ -1656,7 +1788,8 @@ def render_html(model: dict[str, Any], title: str,
                                        (100, 'last 100'), (0, 'all')))
             + '</div>')
     docs_html = ''
-    if any(split_description(c['desc'])[1] for c in model['cells']):
+    if any(split_description(c['desc'])[1] or c.get('value_history')
+           for c in model['cells']):
         docs_html = ('<button type="button" class="docs-all" '
                      'aria-pressed="false">Show all descriptions</button>')
     tree_html = ''
@@ -1782,7 +1915,7 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}{_HIST_JS}{_TREE_JS}{_DOCS_JS}</script>
+<script>{_JS}{_HIST_JS}{_TREE_JS}{_VCHART_JS}{_DOCS_JS}</script>
 </body></html>
 """
 

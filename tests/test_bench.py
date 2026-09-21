@@ -286,9 +286,7 @@ class TestCalibrationTree:
                       r'</span></summary><div class="vchart" data-v="([^"]*)" '
                       r'data-ref="RTL"></div></details>', html_str)
         values = json.loads(html.unescape(m.group(1)))
-        assert [v[:2] for v in values] == [[110.0, 100.0], [120.0, 100.0]]
-        assert [v[3] for v in values] == ['2026-07-16T10:00',
-                                          '2026-07-17T10:00']
+        assert values == [[110.0, 100.0, 1], [120.0, 100.0, 2]]
         assert "det.querySelector('.vchart')" in html_str   # the drawing
 
 
@@ -680,14 +678,18 @@ class TestCalibrationHistory:
         model = calibration.build_model(rows)
         calibration.annotate_trends(model, hist)
         cell = model['cells'][0]
-        assert cell['delta_history'] == [
-            [0.0, 'ok', 'commit0', '2026-07-16T10:00'],
-            [4.0, 'ok', 'commit1', '2026-07-17T10:00'],
-            [30.0, 'bad', 'commit2', '2026-07-18T10:00']]
+        # points carry the run id; the report's run axis holds commit/date
+        assert cell['delta_history'] == [[0.0, 'ok', 1], [4.0, 'ok', 2],
+                                         [30.0, 'bad', 3]]
         assert cell['tol_pct'] == 5.0     # declared tol 5 on a ref of 100
 
         html_str = calibration.render_html(model, 'hist', history=hist)
         assert '<th class="txt">Δ history · trend</th>' in html_str
+        assert ('<script type="application/json" id="calib-runs">'
+                '[[1,"commit0","2026-07-16T10:00"],'
+                '[2,"commit1","2026-07-17T10:00"],'
+                '[3,"commit2","2026-07-18T10:00"]]</script>') in html_str
+
         m = re.search(r'<td class="dh" data-h="([^"]*)" data-tol="5">',
                       html_str)
         assert json.loads(html.unescape(m.group(1))) == cell['delta_history']
@@ -696,6 +698,28 @@ class TestCalibrationHistory:
             assert f'data-n="{n}"' in html_str
         assert 'data-n="10" aria-pressed="true"' in html_str
         assert 'td.dh[data-h]' in html_str      # the drawing script
+
+    def test_metric_added_later_keeps_the_run_axis(self, tmp_path):
+        # 'late' is only measured in the last of the three runs: its point
+        # carries that run's id, so the report can place it under the other
+        # rows' last point instead of centring it.
+        runs = [_run([_result('t:a', 'tgt', 'early', 100 + i, ref=100,
+                              src='rtl')],
+                     timestamp=f'2026-07-{16 + i}T10:00:00+00:00')
+                for i in range(3)]
+        runs[-1]['results'].append(
+            _result('t:a', 'tgt', 'late', 130, ref=100, src='rtl'))
+        conn = sqlite3.connect(_make_db(tmp_path, runs))
+        rows = calibration.query_results(conn)
+        hist = calibration.build_history(calibration.query_history(conn))
+        conn.close()
+        model = calibration.build_model(rows)
+        calibration.annotate_trends(model, hist)
+        by_metric = {c['metric']: c for c in model['cells']}
+        assert [p[2] for p in by_metric['early']['delta_history']] == [1, 2, 3]
+        assert [p[2] for p in by_metric['late']['delta_history']] == [3]
+        html_str = calibration.render_html(model, 'axis', history=hist)
+        assert '"calib-runs">[[1,' in html_str and '[3,' in html_str
 
     def test_trend_icons(self, tmp_path):
         db = self._db(tmp_path, [100, 104, 130])

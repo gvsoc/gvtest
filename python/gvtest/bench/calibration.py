@@ -848,20 +848,23 @@ def _tree_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
     return cells
 
 
-def _group_history(cells: list[dict[str, Any]],
-                   tol_pct: float) -> list[list[Any]]:
+def _group_history(cells: list[dict[str, Any]], tol_pct: float,
+                   run_order: list[int]) -> list[list[Any]]:
     """Mean |Δ| of a level's metrics per run, in the per-row history format
-    ([value, severity, commit, timestamp]); a run counts the metrics it has."""
-    per_run: dict[tuple[str, str], list[float]] = defaultdict(list)
+    ([value, severity, run id]); a run counts the metrics it has."""
+    per_run: dict[int, list[float]] = defaultdict(list)
     for c in cells:
-        for delta, _, commit, ts in c.get('delta_history') or []:
-            per_run[(ts, commit)].append(abs(delta))
+        for delta, _, run_id in c.get('delta_history') or []:
+            per_run[run_id].append(abs(delta))
     points = []
-    for (ts, commit), values in sorted(per_run.items()):
+    for run_id in run_order:
+        values = per_run.get(run_id)
+        if not values:
+            continue
         mean = statistics.mean(values)
         sev = ('ok' if mean <= tol_pct
                else 'warn' if mean <= 2 * tol_pct else 'bad')
-        points.append([round(mean, 3), sev, commit, ts])
+        points.append([round(mean, 3), sev, run_id])
     return points
 
 
@@ -877,7 +880,8 @@ def _history_cell(cell: dict[str, Any] | None) -> str:
 
 
 def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
-                    default_tol_pct: float = 5.0) -> str:
+                    default_tol_pct: float = 5.0,
+                    run_order: list[int] | None = None) -> str:
     targets = cluster['targets']
     stats = cluster['stats']
     # Only annotate_trends() sets delta_history (i.e. when history was built).
@@ -977,7 +981,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
         if spread:
             out.append('<td colspan="2"></td>')
         if with_history:
-            points = _group_history(cells, default_tol_pct)
+            points = _group_history(cells, default_tol_pct,
+                                    run_order or [])
             out.append(_history_cell({'delta_history': points,
                                       'tol_pct': default_tol_pct}))
         out.append(f'<td colspan="{n_rest}"></td></tr>')
@@ -1173,6 +1178,47 @@ _TREND_ICONS = {
 }
 
 
+# The report's run axis, shared by every graph on the page: a point is
+# placed at its run's column, so metrics measured in different runs (a test
+# added later, one that only runs on some targets) still line up. window(n)
+# narrows it to the last n runs, as the Δ history buttons ask.
+_AXIS_JS = r"""
+(function () {
+  'use strict';
+  var el = document.getElementById('calib-runs');
+  var runs = el ? JSON.parse(el.textContent) : [];
+  var info = {};
+  runs.forEach(function (r) { info[r[0]] = r; });
+  window.calibRuns = function () {
+    return {
+      label: function (id) {
+        var r = info[id];
+        return r ? r[1] + ' \u00b7 ' + r[2].replace('T', ' ') : String(id);
+      },
+      date: function (id) {
+        var r = info[id];
+        return r ? r[2].slice(0, 10) : '';
+      },
+      window: function (n) {
+        var w = n > 0 ? runs.slice(-n) : runs;
+        var at = {};
+        w.forEach(function (r, i) { at[r[0]] = i; });
+        return {
+          runs: w,
+          has: function (id) { return id in at; },
+          index: function (id) { return at[id]; },
+          // x of a run between lo and hi, the single-run case centred
+          x: function (id, lo, hi) {
+            return w.length < 2 ? (lo + hi) / 2
+                : lo + at[id] * (hi - lo) / (w.length - 1);
+          }
+        };
+      }
+    };
+  };
+})();
+"""
+
 # Δ-history sparklines: one per table row, redrawn over the last N runs picked
 # with the .hwin buttons (N = 0 means every run). The choice is remembered per
 # browser. Each point carries [Δ%, severity, commit, timestamp].
@@ -1184,6 +1230,7 @@ _HIST_JS = r"""
       document.querySelectorAll('.hwin button[data-n]'));
   if (!cells.length) return;
   var W = 120, H = 26, P = 3;
+  var AXIS = window.calibRuns();
 
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -1215,7 +1262,9 @@ _HIST_JS = r"""
 
   function draw(td, n) {
     var all = JSON.parse(td.getAttribute('data-h'));
-    var pts = n > 0 ? all.slice(-n) : all;
+    var win = AXIS.window(n);
+    var pts = all.filter(function (p) { return win.has(p[2]); });
+    if (!pts.length) { td.textContent = ''; return; }
     var tol = parseFloat(td.getAttribute('data-tol')) || 0;
     var ds = pts.map(function (p) { return p[0]; });
     // Scale to the data so movement stays visible on metrics far from their
@@ -1231,32 +1280,29 @@ _HIST_JS = r"""
     if (gap <= hi - lo) { lo = Math.min(lo, -tol); hi = Math.max(hi, tol); }
     var pad = (hi - lo) * 0.08;
     lo -= pad; hi += pad;
-    function x(i) {
-      return pts.length < 2 ? W / 2 : P + i * (W - 2 * P) / (pts.length - 1);
-    }
+    function x(p) { return win.x(p[2], P, W - P); }
     function y(v) { return P + (hi - v) / (hi - lo) * (H - 2 * P); }
 
     var s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W +
         ' ' + H + '" role="img"><title>' + esc('Δ over ' +
         (pts.length < all.length ? 'the last ' : 'all ') + pts.length +
-        ' run(s): ' + fmt(ds[0]) + ' → ' + fmt(ds[ds.length - 1]) +
+        ' run(s) of this metric: ' + fmt(ds[0]) + ' → ' + fmt(ds[ds.length - 1]) +
         ' (band: ±' + tol + '% tolerance)') + '</title>' +
         '<rect class="band" x="0" y="' + y(tol).toFixed(1) + '" width="' + W +
         '" height="' + Math.max(0, y(-tol) - y(tol)).toFixed(1) + '"/>' +
         '<line class="zero" x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) +
         '" y2="' + y(0).toFixed(1) + '"/>';
     if (pts.length > 1) {
-      s += '<polyline class="line" points="' + pts.map(function (p, i) {
-        return x(i).toFixed(1) + ',' + y(p[0]).toFixed(1);
+      s += '<polyline class="line" points="' + pts.map(function (p) {
+        return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
       }).join(' ') + '"/>';
     }
     pts.forEach(function (p, i) {
       var last = i === pts.length - 1;
       s += '<circle class="' + (last ? 'last ' + esc(p[1] || '') : 'pt') +
-          '" cx="' + x(i).toFixed(1) + '" cy="' + y(p[0]).toFixed(1) +
+          '" cx="' + x(p).toFixed(1) + '" cy="' + y(p[0]).toFixed(1) +
           '" r="' + (last ? 2.8 : 2.2) + '"><title>' +
-          esc(fmt(p[0]) + ' · ' + p[2] + ' · ' +
-              p[3].replace('T', ' ')) + '</title></circle>';
+          esc(fmt(p[0]) + ' · ' + AXIS.label(p[2])) + '</title></circle>';
     });
     td.innerHTML = s + '</svg>' + trend(pts, tol);
   }
@@ -1348,6 +1394,7 @@ _VCHART_JS = r"""
 (function () {
   'use strict';
   var W = 560, H = 170, L = 60, R = 12, T = 22, B = 24;
+  var AXIS = window.calibRuns();
 
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -1364,8 +1411,9 @@ _VCHART_JS = r"""
 
   function draw(div) {
     var all = JSON.parse(div.getAttribute('data-v'));
-    var n = windowSize();
-    var pts = n > 0 ? all.slice(-n) : all;
+    var win = AXIS.window(windowSize());
+    var pts = all.filter(function (p) { return win.has(p[2]); });
+    if (!pts.length) { div.innerHTML = ''; return; }
     var ref = div.getAttribute('data-ref');
     var ys = [];
     pts.forEach(function (p) { ys.push(p[0]); if (p[1] !== null) ys.push(p[1]); });
@@ -1373,10 +1421,7 @@ _VCHART_JS = r"""
     if (hi - lo < 1e-9) { var m = Math.abs(hi) * 0.05 || 1; lo -= m; hi += m; }
     var pad = (hi - lo) * 0.1;
     lo -= pad; hi += pad;
-    function x(i) {
-      return pts.length < 2 ? (L + W - R) / 2
-          : L + i * (W - L - R) / (pts.length - 1);
-    }
+    function x(p) { return win.x(p[2], L, W - R); }
     function y(v) { return T + (hi - v) / (hi - lo) * (H - T - B); }
 
     var s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W +
@@ -1387,18 +1432,20 @@ _VCHART_JS = r"""
           (L - 6) + '" y="' + (y(v) + 4).toFixed(1) +
           '" text-anchor="end">' + esc(fmt(v)) + '</text>';
     });
+    // Dates of the window, not of this metric: the axis is shared.
+    var edge = win.runs;
     s += '<text x="' + L + '" y="' + (H - 6) + '">' +
-        esc(pts[0][3].slice(0, 10)) + '</text>';
-    if (pts.length > 1) {
+        esc(AXIS.date(edge[0][0])) + '</text>';
+    if (edge.length > 1) {
       s += '<text x="' + (W - R) + '" y="' + (H - 6) +
-          '" text-anchor="end">' + esc(pts[pts.length - 1][3].slice(0, 10)) +
+          '" text-anchor="end">' + esc(AXIS.date(edge[edge.length - 1][0])) +
           '</text>';
     }
     // Reference: a step line, held until the next run that re-states it.
     var d = '';
-    pts.forEach(function (p, i) {
+    pts.forEach(function (p) {
       if (p[1] === null) return;
-      var X = x(i).toFixed(1), Y = y(p[1]).toFixed(1);
+      var X = x(p).toFixed(1), Y = y(p[1]).toFixed(1);
       d += d ? ' H' + X + ' V' + Y : 'M' + X + ',' + Y;
     });
     if (pts.length === 1 && pts[0][1] !== null) {
@@ -1406,13 +1453,12 @@ _VCHART_JS = r"""
     }
     if (d) s += '<path class="vr" d="' + d + '"/>';
     if (pts.length > 1) {
-      s += '<polyline class="vv" points="' + pts.map(function (p, i) {
-        return x(i).toFixed(1) + ',' + y(p[0]).toFixed(1);
+      s += '<polyline class="vv" points="' + pts.map(function (p) {
+        return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
       }).join(' ') + '"/>';
     }
-    pts.forEach(function (p, i) {
-      var t = p[2] + ' · ' + p[3].replace('T', ' ') + ' · gvsoc ' +
-          fmt(p[0]);
+    pts.forEach(function (p) {
+      var t = AXIS.label(p[2]) + ' · gvsoc ' + fmt(p[0]);
       if (p[1] !== null) {
         t += ' · ' + ref + ' ' + fmt(p[1]);
         if (p[1]) {
@@ -1420,7 +1466,7 @@ _VCHART_JS = r"""
           t += ' (Δ ' + (dp >= 0 ? '+' : '') + dp.toFixed(1) + '%)';
         }
       }
-      s += '<circle class="vp" cx="' + x(i).toFixed(1) + '" cy="' +
+      s += '<circle class="vp" cx="' + x(p).toFixed(1) + '" cy="' +
           y(p[0]).toFixed(1) + '" r="3"><title>' + esc(t) +
           '</title></circle>';
     });
@@ -1530,10 +1576,15 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
     trend_prev_pct: improvement of |Δ| against the previous run.
     trend_window_pct: improvement of |Δ| against the mean |Δ| of the runs
     in the `window_days` before the current one (the recent norm).
-    delta_history: [Δ%, severity, commit, timestamp] per run, oldest first,
-    with tol_pct the tolerance band it is judged against.
-    value_history: [measured, reference, commit, timestamp] per run, the
-    absolute values behind delta_history.
+    delta_history: [Δ%, severity, run id] per run, oldest first, with
+    tol_pct the tolerance band it is judged against.
+    value_history: [measured, reference, run id] per run, the absolute
+    values behind delta_history.
+
+    Points carry the run id rather than its commit and date: the reports
+    place every metric on the report's own run axis (history['runs']), so
+    a metric measured in only some of the runs still lines up with the
+    others.
     """
     default_tol_pct = model['default_tol_pct']
     for cell in model['cells']:
@@ -1543,13 +1594,10 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
         points = history['metrics'].get(
             (cell['test'], cell['target'], cell['metric'])) or []
         cell['delta_history'] = [
-            [round(p['delta_pct'], 3), p['severity'],
-             (p['git_commit'] or '')[:8], (p['timestamp'] or '')[:16]]
+            [round(p['delta_pct'], 3), p['severity'], p['run_id']]
             for p in points]
         cell['value_history'] = [
-            [p['value'], p['ref'],
-             (p['git_commit'] or '')[:8], (p['timestamp'] or '')[:16]]
-            for p in points]
+            [p['value'], p['ref'], p['run_id']] for p in points]
         cell['tol_pct'] = (abs(cell['tol'] / cell['ref']) * 100
                            if cell['tol'] is not None and cell['ref']
                            else default_tol_pct)
@@ -1945,9 +1993,17 @@ def render_html(model: dict[str, Any], title: str,
             '<th class="txt">Target</th><th>Measured metrics</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div></section>')
 
+    # Every row is drawn on this one run axis, so a metric measured in
+    # only some of the runs still lines up with the others.
+    runs_axis = [[r['run_id'], (r['git_commit'] or '')[:8],
+                  (r['timestamp'] or '')[:16]]
+                 for r in (history or {}).get('runs', [])]
+    run_order = [r[0] for r in runs_axis]
     sections = ''.join(_render_cluster(c, show_improve=improvement is not None,
-                                       default_tol_pct=default_tol_pct)
+                                       default_tol_pct=default_tol_pct,
+                                       run_order=run_order)
                        for c in model['clusters'])
+    runs_json = json.dumps(runs_axis, separators=(',', ':')).replace('</', '<\\/')
 
     client_json = json.dumps(_client_data(model)).replace('</', '<\\/')
 
@@ -1979,7 +2035,8 @@ from a baseline run (<code>--ref-platform</code>/<code>--ref-run</code>).
 </footer>
 </main>
 <script type="application/json" id="calib-data">{client_json}</script>
-<script>{_JS}{_HIST_JS.replace('__TREND_ICONS__', json.dumps(_TREND_ICONS))}{_TREE_JS}{_VCHART_JS}{_DOCS_JS}</script>
+<script type="application/json" id="calib-runs">{runs_json}</script>
+<script>{_JS}{_AXIS_JS}{_HIST_JS.replace('__TREND_ICONS__', json.dumps(_TREND_ICONS))}{_TREE_JS}{_VCHART_JS}{_DOCS_JS}</script>
 </body></html>
 """
 

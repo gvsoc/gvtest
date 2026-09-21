@@ -244,22 +244,27 @@ class TestCalibrationTree:
         html_str = calibration.render_html(model, 'tree', history=hist)
         groups = {label: (gid, anc, meta, avg)
                   for gid, key, anc, label, meta, avg in self._groups(html_str)}
-        # The single-child chain t:one > a is merged into one level
-        assert set(groups) == {'t:one › a', 'b', 'c', 't:two'}
-        top = groups['t:one › a']
-        assert top[1] == ''                           # a first-level row
-        assert groups['b'][1] == top[0]               # b sits under it
+        # The test names open one level per colon-separated part, and the
+        # single-child chain one > a is merged into one level
+        assert set(groups) == {'t', 'one › a', 'b', 'c', 'two'}
+        root = groups['t']
+        top = groups['one › a']
+        assert root[1] == ''                          # a first-level row
+        assert top[1] == root[0]                      # the test sits under it
+        assert groups['two'][1] == root[0]
+        assert groups['b'][1] == f'{root[0]} {top[0]}'  # b sits under both
+        assert root[3] == 'avg 10.5%'                 # (10 + 30 + 2 + 0) / 4
         assert top[2].startswith('3 metrics · 33% within tolerance · '
                                  'worst -30.0% (b.y)')
         assert top[3] == 'avg 14.0%'                  # (10 + 30 + 2) / 3
         assert groups['b'][3] == 'avg 20.0%'
-        assert groups['t:two'][3] == 'avg 0.0%'
+        assert groups['two'][3] == 'avg 0.0%'
         # Leaves hang below every level above them
-        assert re.search(r'<tr data-anc="%s %s"><td class="txt" '
-                         r'style="padding-left:50px"><details class="mdoc">'
+        assert re.search(r'<tr data-anc="%s %s %s"><td class="txt" '
+                         r'style="padding-left:[0-9]+px"><details class="mdoc">'
                          r'<summary><span class="mname" '
                          r'title="a.b.x">x</span>'
-                         % (top[0], groups['b'][0]), html_str)
+                         % (root[0], top[0], groups['b'][0]), html_str)
         assert 'class="tree-all" data-open="1"' in html_str
 
     def test_level_history_is_mean_abs_delta(self, tmp_path):

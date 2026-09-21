@@ -803,10 +803,12 @@ def _metric_cell(metric: str, desc: str, depth: int = 0,
 
 
 def _build_tree(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Group the rows by test, then by the dotted parts of the metric name.
+    """Group the rows by the colon-separated parts of the test name (the
+    testset hierarchy, "el:dma:dma_features"), then by the dotted parts of the
+    metric name.
 
     A level holding a single sub-level and no metric of its own is merged
-    into it ("el:dma_features › idma"), so every level shown is a real
+    into it ("dma_features › idma"), so every level shown is a real
     choice. Sub-levels are sorted by name; the metrics inside a level keep
     the rows' order (worst first).
     """
@@ -814,11 +816,14 @@ def _build_tree(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         node = root
         parts = row['metric'].split('.')[:-1]
-        for i, part in enumerate([row['test']] + parts):
-            # prefix: the part of the metric name this level stands for
+        # prefix: the part of the metric name a level stands for
+        levels = [(part, '') for part in row['test'].split(':')]
+        levels += [(part, ''.join(p + '.' for p in parts[:i + 1]))
+                   for i, part in enumerate(parts)]
+        for part, prefix in levels:
             node = node['children'].setdefault(part, {
                 'label': part, 'children': {}, 'rows': [],
-                'prefix': ''.join(p + '.' for p in parts[:i])})
+                'prefix': prefix})
         node['rows'].append(row)
 
     def merge(node: dict[str, Any]) -> dict[str, Any]:

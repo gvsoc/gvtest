@@ -23,6 +23,9 @@ Usage:
     python -m gvtest.bench.db init   --db bench.sqlite
     python -m gvtest.bench.db insert --json results.json --db bench.sqlite
     python -m gvtest.bench.db list   --db bench.sqlite [--test PATTERN]
+    python -m gvtest.bench.db rename --db bench.sqlite --test OLD --to NEW
+                                     [--metric-re RE --metric-sub SUB]
+                                     [--apply]
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -204,6 +208,62 @@ def insert_json(db_path: str, json_path: str) -> int | None:
     return run_id
 
 
+def rename(db_path: str, test: str, to_test: str | None = None,
+           metric_re: str | None = None, metric_sub: str = '',
+           apply: bool = False) -> int:
+    """Rename recorded results after a testset was renamed or reorganised.
+
+    Without this the reports see the old and the new name as two metrics and
+    the history restarts. `metric_re`/`metric_sub` rewrite the metric name
+    too (re.sub), for results that moved to another test with new names.
+
+    Returns the number of rows renamed (0 when nothing matches), or -1 when
+    a renamed row would collide with one its run already holds.
+    """
+    conn = init_db(db_path)
+    rows = list(conn.execute(
+        'SELECT id, run_id, target, test, metric FROM results WHERE test = ?',
+        (test,)))
+    pattern = re.compile(metric_re) if metric_re else None
+    moves = []
+    for rid, run_id, target, old_test, metric in rows:
+        new_metric = pattern.sub(metric_sub, metric) if pattern else metric
+        new_test = to_test or old_test
+        if (new_test, new_metric) != (old_test, metric):
+            moves.append((rid, run_id, target, new_test, new_metric,
+                          old_test, metric))
+    if not moves:
+        print(f'Nothing to rename: no results under test {test!r}'
+              if not rows else f'Nothing to rename for test {test!r}')
+        conn.close()
+        return 0
+
+    taken = {(r[0], r[1], r[2], r[3]) for r in conn.execute(
+        'SELECT run_id, target, test, metric FROM results')}
+    clashes = [m for m in moves if (m[1], m[2], m[3], m[4]) in taken]
+    pairs = sorted({(m[5], m[6], m[3], m[4]) for m in moves})
+    for old_t, old_m, new_t, new_m in pairs:
+        n = sum(1 for m in moves if (m[5], m[6]) == (old_t, old_m))
+        print(f'  {old_t}:{old_m} -> {new_t}:{new_m}  ({n} row(s))')
+    print(f'{len(moves)} row(s), {len(pairs)} name(s)')
+    if clashes:
+        print(f'Refusing: {len(clashes)} row(s) would collide with results '
+              f'the same run already holds', file=sys.stderr)
+        conn.close()
+        return -1
+    if not apply:
+        print('Dry run; pass --apply to write.')
+        conn.close()
+        return len(moves)
+    with conn:
+        conn.executemany(
+            'UPDATE results SET test = ?, metric = ? WHERE id = ?',
+            [(m[3], m[4], m[0]) for m in moves])
+    print(f'Renamed {len(moves)} row(s).')
+    conn.close()
+    return len(moves)
+
+
 def list_tests(db_path: str, pattern: str | None = None) -> None:
     """List distinct test/metric combinations in the database."""
     conn = init_db(db_path)
@@ -256,6 +316,20 @@ def main() -> None:
                           help='JSON results file')
     p_insert.add_argument('--db', required=True, help='SQLite database path')
 
+    p_rename = subparsers.add_parser(
+        'rename', help='Rename recorded results after a testset rename')
+    p_rename.add_argument('--db', required=True, help='SQLite database path')
+    p_rename.add_argument('--test', required=True,
+                          help='Test whose results to rename')
+    p_rename.add_argument('--to', dest='to_test', default=None,
+                          help='New test name')
+    p_rename.add_argument('--metric-re', default=None,
+                          help='Regexp matched against the metric name')
+    p_rename.add_argument('--metric-sub', default='',
+                          help='Replacement for --metric-re (re.sub)')
+    p_rename.add_argument('--apply', action='store_true',
+                          help='Write the changes (default: dry run)')
+
     p_list = subparsers.add_parser('list', help='List benchmarks')
     p_list.add_argument('--db', required=True, help='SQLite database path')
     p_list.add_argument('--test', default=None,
@@ -274,6 +348,13 @@ def main() -> None:
 
     elif args.command == 'insert':
         insert_json(args.db, args.json_file)
+
+    elif args.command == 'rename':
+        if args.to_test is None and args.metric_re is None:
+            parser.error('rename needs --to and/or --metric-re')
+        if rename(args.db, args.test, args.to_test, args.metric_re,
+                  args.metric_sub, args.apply) < 0:
+            sys.exit(1)
 
     elif args.command == 'list':
         list_tests(args.db, args.test)

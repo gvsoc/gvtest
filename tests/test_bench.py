@@ -121,6 +121,59 @@ class TestDbMigration:
 
 
 # ---------------------------------------------------------------------------
+# Renaming recorded results after a testset rename
+# ---------------------------------------------------------------------------
+
+class TestRename:
+
+    def _db(self, tmp_path):
+        return _make_db(tmp_path, [_run([
+            _result('el:dma_l1_l2', 'tgt', 'dma_bw.priv.ext2loc.2d', 3.1),
+            _result('el:dma_l1_l2', 'tgt', 'dma_bw.ext.ext2loc.2d', 5.2),
+            _result('other', 'tgt', 'm', 1.0)])])
+
+    def _names(self, db):
+        conn = sqlite3.connect(db)
+        names = sorted(conn.execute('SELECT test, metric FROM results'))
+        conn.close()
+        return names
+
+    def test_rename_test(self, tmp_path):
+        from gvtest.bench.db import rename
+        db = self._db(tmp_path)
+        assert rename(db, 'el:dma_l1_l2', 'el:dma:dma_l1_mem') == 2
+        assert self._names(db)[0][0] == 'el:dma_l1_l2'   # dry run by default
+        assert rename(db, 'el:dma_l1_l2', 'el:dma:dma_l1_mem', apply=True) == 2
+        assert self._names(db) == [
+            ('el:dma:dma_l1_mem', 'dma_bw.ext.ext2loc.2d'),
+            ('el:dma:dma_l1_mem', 'dma_bw.priv.ext2loc.2d'),
+            ('other', 'm')]
+
+    def test_rename_test_and_metric(self, tmp_path):
+        from gvtest.bench.db import rename
+        db = self._db(tmp_path)
+        assert rename(db, 'el:dma_l1_l2', 'el:dma_ext_ram',
+                      metric_re=r'^dma_bw\.ext\.(\w+)\.(.*)$',
+                      metric_sub=r'extram_bw.extram_\1_\2', apply=True) == 2
+        assert ('el:dma_ext_ram', 'extram_bw.extram_ext2loc_2d') \
+            in self._names(db)
+
+    def test_rename_refuses_collisions(self, tmp_path, capsys):
+        from gvtest.bench.db import rename
+        db = self._db(tmp_path)
+        # renaming onto a name the same run already holds
+        assert rename(db, 'el:dma_l1_l2', 'el:dma_l1_l2',
+                      metric_re=r'^dma_bw\.\w+\.', metric_sub='dma_bw.priv.',
+                      apply=True) == -1
+        assert 'collide' in capsys.readouterr().err
+        assert len(self._names(db)) == 3        # nothing written
+
+    def test_rename_nothing_to_do(self, tmp_path):
+        from gvtest.bench.db import rename
+        assert rename(self._db(tmp_path), 'el:absent', 'el:other') == 0
+
+
+# ---------------------------------------------------------------------------
 # Trend report rendering
 # ---------------------------------------------------------------------------
 

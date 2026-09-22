@@ -27,6 +27,13 @@ each with the direction that counts as an improvement, and shows the
 latest value, its change against the previous run and against a baseline,
 and its history.
 
+Every level carries a performance index: 100 at its first run, multiplied
+at each run by how much the level moved since the run before. Chaining the
+moves rather than comparing straight back to the first run keeps a
+benchmark that is added or retired from moving the index on its own, and a
+level weighs its immediate children equally, so a test is worth the same
+whether it declares one metric or six.
+
 Usage:
     python -m gvtest.bench.benchmarks --db bench.sqlite --output bench.html
     python -m gvtest.bench.benchmarks --db bench.sqlite --output b.html \\
@@ -41,6 +48,7 @@ import math
 import statistics
 import sqlite3
 import sys
+from collections import defaultdict
 from typing import Any
 
 from gvtest.bench import split_description
@@ -203,31 +211,110 @@ def _aggregate(cells: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _index_series(cells: list[dict[str, Any]],
-                  run_order: list[int]) -> list[list[Any]]:
-    """A level's speed against its own first run, in %, per run.
+def _geomean_ratio(ratios: list[float]) -> float | None:
+    """Geometric mean of speed ratios, where 1 is unchanged."""
+    usable = [r for r in ratios if r and r > 0]
+    if not usable:
+        return None
+    return math.exp(statistics.fmean(math.log(r) for r in usable))
 
-    Each metric is taken relative to its first recorded value, signed by its
-    direction, and the level is the geometric mean of those ratios: +10%
-    means the level is a tenth faster than it started.
+
+def _cell_steps(cell: dict[str, Any]) -> tuple[set[int], dict[int, float]]:
+    """A benchmark's speed ratio against its own previous point, per run.
+
+    The step spans the previous point rather than the previous run, so a run
+    a benchmark sat out does not fabricate a jump; above 1 is faster,
+    whichever direction the metric improves in.
     """
-    first: dict[str, float] = {}
-    per_run: dict[int, list[float]] = {}
-    for cell in cells:
-        for value, _, run_id in cell['spark']:
-            key = f"{cell['test']}:{cell['metric']}"
-            base = first.setdefault(key, value)
-            if not base or value is None:
-                continue
-            ratio = base / value if cell['better'] == 'lower' else value / base
-            per_run.setdefault(run_id, []).append((ratio - 1) * 100)
-    points = []
+    runs = set()
+    steps: dict[int, float] = {}
+    points = cell['spark']
+    for i, (value, _, run_id) in enumerate(points):
+        if value is None:
+            continue
+        runs.add(run_id)
+        prev = points[i - 1][0] if i else None
+        if prev and value:
+            steps[run_id] = (prev / value if cell['better'] == 'lower'
+                             else value / prev)
+    return runs, steps
+
+
+def _steps_of(node: dict[str, Any]) -> tuple[set[int], dict[int, float]]:
+    """The runs a level has data for, and its speed ratio per run.
+
+    Every immediate child counts once — a sub-level as much as a benchmark
+    sitting directly in the level — so a test declaring six metrics does not
+    outvote one declaring a single metric, and three views of the same
+    measurement (cycles, active cycles, instructions) weigh as one test.
+    """
+    children = [_steps_of(child) for child in node['children'].values()]
+    children += [_cell_steps(row['cells'][0]) for row in node['rows']
+                 if row['cells'][0] is not None]
+    runs: set[int] = set()
+    per_run: dict[int, list[float]] = defaultdict(list)
+    for child_runs, child_steps in children:
+        runs |= child_runs
+        for run_id, ratio in child_steps.items():
+            per_run[run_id].append(ratio)
+    steps = {run_id: ratio for run_id, ratio in
+             ((r, _geomean_ratio(v)) for r, v in per_run.items())
+             if ratio is not None}
+    return runs, steps
+
+
+def _index_series(node: dict[str, Any],
+                  run_order: list[int]) -> list[list[Any]]:
+    """A level's performance index over the runs: 100 at its first run.
+
+    Chained, so each run multiplies the index by how much the level moved
+    since the run before. Adding or retiring a benchmark therefore cannot
+    move the index on its own: a benchmark only weighs in once it has a run
+    to be compared against.
+    """
+    runs, steps = _steps_of(node)
+    points: list[list[Any]] = []
+    index: float | None = None
     for run_id in run_order:
-        gains = per_run.get(run_id)
-        if gains:
-            index = _geomean_gain(gains)
-            points.append([round(index, 3), _verdict(index), run_id])
+        if run_id not in runs:
+            continue
+        if index is None:
+            index, sev = 100.0, None
+        else:
+            step = steps.get(run_id, 1.0)
+            index *= step
+            sev = _verdict((step - 1) * 100)
+        points.append([round(index, 3), sev, run_id])
     return points
+
+
+def _root_node(clusters: list[dict[str, Any]]) -> dict[str, Any]:
+    """A node over every target, so the whole report has one index."""
+    return {'label': '', 'prefix': '', 'rows': [],
+            'children': {c['targets'][0]: _build_tree(c['rows'])
+                         for c in clusters}}
+
+
+def _index_cell(points: list[list[Any]], grp: bool = True) -> str:
+    """A level's index, coloured by where it stands against its first run.
+
+    Only a level that is really ahead or behind is tinted; one sitting
+    within the noise band of 100 stays plain, so the column reads as a few
+    marked levels rather than a wall of colour.
+    """
+    cls = 'num grp' if grp else 'num'
+    if not points:
+        return f'<td class="{cls}">—</td>'
+    index = points[-1][0]
+    gain = index - 100
+    sev = _verdict(gain)
+    word = ('faster' if sev == 'ok' else 'slower' if sev == 'bad'
+            else 'about as fast')
+    title = (f'{word} than at the first run of this level: index {index:.1f}, '
+             f'{"+" if gain >= 0 else ""}{gain:.1f}%')
+    sev_cls = f' err {sev}' if sev in ('ok', 'bad') else ''
+    return (f'<td class="{cls}{sev_cls}" title="{_esc(title)}">'
+            f'{index:.1f}</td>')
 
 
 def _pct_cell(gain_pct: float | None, grp: bool = False) -> str:
@@ -365,9 +452,13 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
     """One target's tree: levels, then their benchmarks."""
     target = cluster['targets'][0]
     stats = cluster['stats']
+    tree = _build_tree(cluster['rows'])
+    index = _index_series(tree, run_order)
     meta = (f"{cluster['n_tests']} test(s) · {stats['n_total']} benchmark(s)"
             f" · {stats['n_faster']} faster, {stats['n_slower']} slower "
             f"than the run before")
+    if index:
+        meta += f' · index {index[-1][0]:.1f}'
     out = [f'<section id="sec-{_esc(target)}" '
            f'data-targets="{_esc(target)}"><div class="sec-head">'
            f'<h2>{_esc(target)}</h2>'
@@ -394,19 +485,19 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
             if name.startswith(node['prefix']):
                 name = name[len(node['prefix']):]
             meta += f' · worst: {name}'
+        points = _index_series(node, run_order)
         out.append(f'<tr class="grow" data-gid="{gid}" '
                    f'data-key="{_esc(key)}" data-anc="{anc}">'
                    f'<td class="txt tree"{_indent(depth)}>'
                    f'<button type="button" class="gt" aria-expanded="true">'
                    f'{_esc(node["label"])}</button>'
                    f'<span class="gmeta">{_esc(meta)}</span></td>'
-                   f'<td class="num grp">—</td>'
+                   f'{_index_cell(points)}'
                    f'{_pct_cell(stats["gain_prev_pct"], grp=True)}')
         if with_baseline:
             out.append(_pct_cell(stats['gain_base_pct']))
-        # The level's own speed against where it started, as one line
-        out.append(f'<td class="dh grp">'
-                   f'{_spark(_index_series(cells, run_order), "higher")}</td>'
+        # The level's index over the runs, so the shape of the number above
+        out.append(f'<td class="dh grp">{_spark(points, "higher")}</td>'
                    f'</tr>')
 
     def leaf_row(row: dict[str, Any], anc: str, depth: int) -> None:
@@ -430,7 +521,7 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
         for row in node['rows']:
             leaf_row(row, anc, depth)
 
-    walk(_build_tree(cluster['rows']), target, '', 0)
+    walk(tree, target, '', 0)
     out.append('</tbody></table></div></section>')
     return ''.join(out)
 
@@ -452,6 +543,8 @@ def render_html(model: dict[str, Any], title: str) -> str:
     with_baseline = bool(model['baseline_label'])
     sections = ''.join(_render_cluster(c, run_order, with_baseline)
                        for c in model['clusters'])
+    index = _index_series(_root_node(model['clusters']), run_order)
+    index_txt = f'{index[-1][0]:.1f}' if index else '—'
     runs_txt = (f"{len(runs)} run(s)"
                 + (f" · {runs[0]['git_commit'][:8]} → "
                    f"{runs[-1]['git_commit'][:8]}" if runs else ''))
@@ -486,8 +579,11 @@ def render_html(model: dict[str, Any], title: str) -> str:
 <p class="sub">How the applications perform over the runs. A benchmark is a
 metric a testset declares with <code>kind='benchmark'</code>, each with the
 direction that counts as an improvement; a change is called faster or slower
-beyond ±{NOISE_PCT:g}%. Levels summarise their benchmarks with the geometric
-mean of their speed ratios.</p>
+beyond ±{NOISE_PCT:g}%. Every level carries a performance index, 100 at its
+first run and multiplied by how much it moved at each run since: 112 means a
+level is 12% faster than it started. A level weighs its immediate children
+equally — a sub-level as much as a benchmark of its own — so a test is worth
+the same whether it declares one metric or six.</p>
 <p class="runs">{_esc(runs_txt)}</p>
 {hist}
 <div class="legend">
@@ -496,6 +592,8 @@ mean of their speed ratios.</p>
   <span><i style="background:var(--bad)"></i>slower</span>
 </div>
 <div class="strip">
+  <div class="stat"><div class="v">{index_txt}</div>
+    <div class="k">performance index (100 at the first run)</div></div>
   <div class="stat"><div class="v">{g['n_total']}</div>
     <div class="k">benchmarks</div></div>
   <div class="stat"><div class="v">{_fmt_gain(g['gain_prev_pct'])}</div>

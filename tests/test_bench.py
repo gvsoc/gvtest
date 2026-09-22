@@ -1294,11 +1294,58 @@ class TestBenchmarkReport:
         assert '<th class="grp">Value</th>' in html_str
         assert 'vs baseline' in html_str and 'baseline: run 1' in html_str
         assert '>900<' in html_str and '>55<' in html_str
-        # a level's index: where its benchmarks stand against their first run
+        # a level's index: 100 at its first run, chained from there
         run_order = [r['run_id'] for r in model['history']['runs']]
-        index = benchmarks._index_series(model['cells'], run_order)
-        # run 2 is 1% faster than run 1 (990/1000, 50.5/50), run 3 is 10.6%
-        assert [round(p[0], 1) for p in index] == [0.0, 1.0, 10.6]
-        assert [p[1] for p in index] == ['warn', 'warn', 'ok']
+        index = benchmarks._index_series(
+            benchmarks._root_node(model['clusters']), run_order)
+        # run 2 is 1% faster than run 1 (990/1000, 50.5/50), run 3 9.5% more
+        assert [round(p[0], 1) for p in index] == [100.0, 101.0, 110.6]
+        assert [p[1] for p in index] == [None, 'warn', 'ok']
+        # and it is the number the level rows show
+        assert '>110.6<' in html_str
         # the calibration-only metric is not in the page
         assert 'dma.cycles' not in html_str
+
+    def _index(self, tmp_path, runs):
+        from gvtest.bench import benchmarks
+        conn = sqlite3.connect(_make_db(tmp_path, runs))
+        model = benchmarks.report(conn)
+        conn.close()
+        run_order = [r['run_id'] for r in model['history']['runs']]
+        return benchmarks._index_series(
+            benchmarks._root_node(model['clusters']), run_order)
+
+    def test_a_level_weighs_its_children_equally(self, tmp_path):
+        """A test declaring three metrics does not outvote one declaring a
+        single metric: under 'app', 'big' and 'small' weigh the same."""
+        def bench(test, metric, value):
+            return {**_result(test, 'gap9', metric, value),
+                    'kind': 'benchmark', 'better': 'lower'}
+        runs = []
+        for i, (big, small) in enumerate(((100, 100), (90, 100))):
+            runs.append(_run(
+                [bench('app:big', f'm{n}', big) for n in range(3)]
+                + [bench('app:small', 'm0', small)],
+                timestamp=f'2026-07-{16 + i}T10:00:00+00:00'))
+        index = self._index(tmp_path, runs)
+        # 100 -> 90 is a speed ratio of 1.111, so the level moves by
+        # geomean(1.111, 1.0) = 1.054, not by geomean of the four metrics
+        # (1.111, 1.111, 1.111, 1.0) = 1.082
+        assert [round(p[0], 1) for p in index] == [100.0, 105.4]
+
+    def test_a_new_benchmark_does_not_move_the_index(self, tmp_path):
+        """Chaining: a benchmark only weighs in once it has a run to be
+        compared against, whatever the scale of its values."""
+        def bench(metric, value):
+            return {**_result('app:fir', 'gap9', metric, value),
+                    'kind': 'benchmark', 'better': 'lower'}
+        runs = [_run([bench('a', 100)], timestamp='2026-07-16T10:00:00+00:00'),
+                # 'b' appears here, ten times bigger, and 'a' is 10% faster
+                _run([bench('a', 90), bench('b', 1000)],
+                     timestamp='2026-07-17T10:00:00+00:00'),
+                _run([bench('a', 90), bench('b', 500)],
+                     timestamp='2026-07-18T10:00:00+00:00')]
+        index = self._index(tmp_path, runs)
+        # run 2 is 'a' alone (+11.1%); only at run 3 does 'b' count, and then
+        # the level is geomean(1.0, 2.0) faster
+        assert [round(p[0], 1) for p in index] == [100.0, 111.1, 157.1]

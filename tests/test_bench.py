@@ -470,7 +470,7 @@ class TestCalibrationTree:
         assert groups['b'][1] == f'{root[0]} {top[0]}'  # b sits under both
         assert root[3:] == ('avg 10.5%',              # (10 + 30 + 2 + 0) / 4
                             'max 30.0%')             # the worst of the four
-        assert top[2] == '3 metrics · 33% within tolerance · worst: b.y'
+        assert top[2] == '3 metrics · 67% within 10% · worst: b.y'
         assert top[3:] == ('avg 14.0%', 'max 30.0%')  # (10 + 30 + 2) / 3
         assert groups['b'][3:] == ('avg 20.0%', 'max 30.0%')
         assert groups['two'][3:] == ('avg 0.0%', 'max 0.0%')
@@ -658,14 +658,20 @@ def db_path(tmp_path):
 class TestCalibrationModel:
 
     def test_severity_bands(self, db_path):
+        # One rule for every figure on the page, whatever tolerance the
+        # testset declares: |Δ| <= 10% green, <= 20% yellow, beyond red.
         conn = sqlite3.connect(db_path)
         rows = calibration.query_results(conn)
         conn.close()
         model = calibration.build_model(rows)
         severity = {c['metric']: c['severity'] for c in model['cells']
                     if c['target'] == 'tgt1'}
-        assert severity == {'m_ok': 'ok', 'm_warn': 'warn', 'm_bad': 'bad',
-                            'm_notol': 'ok', 'm_zero': 'ok', 'm_free': None}
+        assert severity == {'m_ok': 'ok',       # 2% off
+                            'm_warn': 'ok',     # 8% off, within the band
+                            'm_bad': 'bad',     # 50% off
+                            'm_notol': 'ok', 'm_zero': 'bad', 'm_free': None}
+        assert [calibration._band(d) for d in (0, 10, 10.1, -20, 20.1)] == \
+            ['ok', 'ok', 'warn', 'warn', 'bad']
 
     def test_one_section_per_target(self, db_path):
         # Targets sharing a test (sib1/sib2) each get their own section
@@ -681,8 +687,8 @@ class TestCalibrationModel:
         sib1 = next(c for c in model['clusters'] if c['targets'] == ['sib1'])
         sib2 = next(c for c in model['clusters'] if c['targets'] == ['sib2'])
         assert sib1['rows'][0]['cells'][0]['severity'] == 'ok'
-        # 90 vs 100 +/- 5 sits exactly on the 2x-tolerance boundary -> warn
-        assert sib2['rows'][0]['cells'][0]['severity'] == 'warn'
+        # 90 vs 100 is 10% off: on the green band's edge
+        assert sib2['rows'][0]['cells'][0]['severity'] == 'ok'
 
     def test_aggregates(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -691,7 +697,8 @@ class TestCalibrationModel:
         g = model['global']
         assert g['n_total'] == 9
         assert g['n_referenced'] == 7
-        assert g['n_ok'] == 4  # m_ok, m_notol, m_zero, sib1
+        # m_ok (2%), m_warn (8%), m_notol (4%), sib1 (0%), sib2 (10%)
+        assert g['n_ok'] == 5
         gapless = next(t for t in model['targets']
                        if t['target'] == 'gapless')
         assert gapless['n_referenced'] == 0
@@ -725,7 +732,7 @@ class TestCalibrationModel:
         cell = model['cells'][0]
         assert cell['ref'] == 100
         assert cell['ref_type'] == 'platform:rtl'
-        assert cell['severity'] == 'bad'  # +12% vs 5% default bands
+        assert cell['severity'] == 'warn'  # +12%: past green, inside yellow
         assert model['global']['n_referenced'] == 1
 
     def test_baseline_carries_spread(self, tmp_path):
@@ -902,7 +909,7 @@ class TestCalibrationHistory:
         # points carry the run id; the report's run axis holds commit/date
         assert cell['delta_history'] == [[0.0, 'ok', 1], [4.0, 'ok', 2],
                                          [30.0, 'bad', 3]]
-        assert cell['tol_pct'] == 5.0     # declared tol 5 on a ref of 100
+        assert cell['tol_pct'] == 10.0    # the sparkline shades the green band
 
         html_str = calibration.render_html(model, 'hist', history=hist)
         assert '<th class="txt">Δ history · trend</th>' in html_str
@@ -912,7 +919,7 @@ class TestCalibrationHistory:
                 '[3,"commit2","2026-07-18T10:00"]]</script>') in html_str
 
         m = re.search(r'<td class="dh"><div class="sp" data-h="([^"]*)" '
-                      r'data-tol="5">', html_str)
+                      r'data-tol="10">', html_str)
         assert json.loads(html.unescape(m.group(1))) == cell['delta_history']
         # Window buttons, last 10 selected by default
         for n in ('5', '10', '100', '0'):

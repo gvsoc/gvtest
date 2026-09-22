@@ -238,19 +238,38 @@ def _classify(cell: dict[str, Any], default_tol_pct: float) -> None:
             bound, bound_ref, declared_tol, default_tol_pct)
 
 
+# How far from its reference a number may be and still read green, then
+# yellow; beyond the second it reads red. One rule for every figure on the
+# page -- a metric, a level's average, a level's worst -- so a colour means
+# the same thing wherever it appears.
+GREEN_PCT = 10.0
+YELLOW_PCT = 20.0
+
+
+def _band(delta_pct: float | None) -> str | None:
+    """ok/warn/bad from a deviation in %, whatever produced it."""
+    if delta_pct is None:
+        return None
+    delta_pct = abs(delta_pct)
+    if delta_pct <= GREEN_PCT:
+        return 'ok'
+    return 'warn' if delta_pct <= YELLOW_PCT else 'bad'
+
+
 def _severity_of(value: float | None, ref: float | None,
-                 tol: float | None, default_tol_pct: float) -> str | None:
-    """ok/warn/bad for one value against one reference."""
+                 tol: float | None = None,
+                 default_tol_pct: float = 0.0) -> str | None:
+    """ok/warn/bad for one value against one reference.
+
+    The declared tolerance gates the test in gvtest; here the bands above
+    say how far off the value is, so the colours are comparable between
+    metrics (and with the levels that aggregate them).
+    """
     if value is None or ref is None:
         return None
-    if tol is None:
-        if ref == 0:
-            return 'ok' if value == 0 else 'bad'
-        tol = abs(ref) * default_tol_pct / 100
-    delta = abs(value - ref)
-    if delta <= tol:
-        return 'ok'
-    return 'warn' if delta <= 2 * tol else 'bad'
+    if ref == 0:
+        return 'ok' if value == 0 else 'bad'
+    return _band((value - ref) / abs(ref) * 100)
 
 
 def _accuracy_error_pct(cell: dict[str, Any]) -> float | None:
@@ -672,8 +691,7 @@ def _histogram(cells: list[dict[str, Any]], default_tol_pct: float) -> str:
     for i, count in enumerate(counts):
         low = -limit + i * bin_width
         mid = abs(low + bin_width / 2)
-        sev = ('ok' if mid <= default_tol_pct
-               else 'warn' if mid <= 2 * default_tol_pct else 'bad')
+        sev = _band(mid)
         height = 4 + 96 * count / peak if count else 0
         cols.append(
             f'<div class="hcol"><div class="hbar {sev}" '
@@ -687,7 +705,7 @@ def _histogram(cells: list[dict[str, Any]], default_tol_pct: float) -> str:
     return (f'<div class="histo" id="histo"><h3 id="histo-title">'
             f'Distribution of Δ across '
             f'{len(pcts)} referenced metrics ({bin_width:g}% bins, '
-            f'colored with the ±{default_tol_pct:g}% default bands; '
+            f'colored with the ±{GREEN_PCT:g}% / ±{YELLOW_PCT:g}% bands; '
             f'tables use each metric\'s own tolerance)</h3>'
             f'<div class="hrow" id="histo-row">{"".join(cols)}</div>'
             f'<p class="note" id="histo-note">{note}</p></div>')
@@ -698,7 +716,7 @@ def _anchor(name: str) -> str:
 
 
 def _history_section(history: dict[str, Any], default_tol_pct: float) -> str:
-    """Per-target calibration over runs: % within tolerance and median |Δ|.
+    """Per-target calibration over runs: % within the green band, median |Δ|.
 
     Drawn as inline SVG so the page stays self-contained.
     """
@@ -724,7 +742,7 @@ def _history_section(history: dict[str, Any], default_tol_pct: float) -> str:
         if len(pts) < 2:
             continue
         with_history.append(target)
-        ok_series = [100 * sum(1 for d in ds if abs(d) <= default_tol_pct)
+        ok_series = [100 * sum(1 for d in ds if abs(d) <= GREEN_PCT)
                      / len(ds) for _, ds in pts]
         med_series = [statistics.median(map(abs, ds)) for _, ds in pts]
         first, last = ok_series[0], ok_series[-1]
@@ -751,11 +769,12 @@ def _history_section(history: dict[str, Any], default_tol_pct: float) -> str:
         '<div class="sec-head">'
         '<h2>Calibration over time</h2>'
         f'<span class="sec-meta">{len(runs)} runs · {_esc(span)} · '
-        f'a metric counts as calibrated within ±{default_tol_pct:g}%'
+        f'a metric counts as calibrated within ±{GREEN_PCT:g}%'
         '</span></div>'
         '<div class="scroll"><table><thead><tr>'
         '<th class="txt">Target</th><th>Runs</th>'
-        '<th class="chart-td">Within tolerance</th><th>First → last</th>'
+        f'<th class="chart-td">Within {GREEN_PCT:g}%</th>'
+        '<th>First → last</th>'
         '<th>Trend</th>'
         '<th class="chart-td">Median |Δ|</th><th>First → last</th>'
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>')
@@ -878,8 +897,8 @@ def _tree_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
     return cells
 
 
-def _group_history(cells: list[dict[str, Any]], tol_pct: float,
-                   run_order: list[int], agg: str = 'mean') -> list[list[Any]]:
+def _group_history(cells: list[dict[str, Any]], run_order: list[int],
+                   agg: str = 'mean') -> list[list[Any]]:
     """Mean (or max) |Δ| of a level's metrics per run, in the per-row
     history format ([value, severity, run id]); a run counts the metrics it
     has."""
@@ -894,9 +913,7 @@ def _group_history(cells: list[dict[str, Any]], tol_pct: float,
         if not values:
             continue
         value = combine(values)
-        sev = ('ok' if value <= tol_pct
-               else 'warn' if value <= 2 * tol_pct else 'bad')
-        points.append([round(value, 3), sev, run_id])
+        points.append([round(value, 3), _band(value), run_id])
     return points
 
 
@@ -934,7 +951,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
 
     head_meta = f"{cluster['n_tests']} test(s) · {stats['n_total']} metric(s)"
     if stats['n_referenced']:
-        head_meta += (f" · {stats['pct_ok']:.0f}% within tolerance"
+        head_meta += (f" · {stats['pct_ok']:.0f}% within {GREEN_PCT:g}%"
                       f" · ref types: {', '.join(stats['ref_types'])}")
     else:
         head_meta += " · measured-only (no references)"
@@ -991,7 +1008,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
         stats = _aggregate(cells)
         meta = f"{stats['n_total']} metric{'s' if stats['n_total'] != 1 else ''}"
         if stats['pct_ok'] is not None:
-            meta += f" · {stats['pct_ok']:.0f}% within tolerance"
+            meta += f" · {stats['pct_ok']:.0f}% within {GREEN_PCT:g}%"
         worst = stats['worst']
         if worst is not None and stats['n_referenced'] > 1:
             name = worst['metric']
@@ -1008,8 +1025,7 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
             if value is None:
                 lines.append(f'<div class="lv">{label} —</div>')
                 continue
-            sev = ('ok' if value <= default_tol_pct
-                   else 'warn' if value <= 2 * default_tol_pct else 'bad')
+            sev = _band(value)
             lines.append(f'<div class="lv err {sev}" title="{label} |Δ| of '
                          f'{len(accs)} metric(s) against their reference">'
                          f'{label} {value:.1f}%</div>')
@@ -1025,8 +1041,8 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
             out.append('<td colspan="2"></td>')
         if with_history:
             sparks = ''.join(
-                _spark(_group_history(cells, default_tol_pct, run_order or [],
-                                      agg), default_tol_pct)
+                _spark(_group_history(cells, run_order or [], agg),
+                       GREEN_PCT)
                 for agg in ('mean', 'max'))
             out.append(f'<td class="dh stack">{sparks}</td>')
         out.append(f'<td colspan="{n_rest}"></td></tr>')
@@ -1284,9 +1300,9 @@ _HIST_JS = r"""
   function fmt(d) { return (d >= 0 ? '+' : '') + d.toFixed(1) + '%'; }
 
   // Improving / stable / getting worse: the latest |Δ| against the median
-  // |Δ| of the earlier runs of the window, stable within half the tolerance
-  // (above the 1-2% run-to-run jitter code layout can cause). The median
-  // keeps one noisy run from flipping the verdict.
+  // |Δ| of the earlier runs of the window, stable within a quarter of the
+  // green band (above the 1-2% run-to-run jitter code layout can cause).
+  // The median keeps one noisy run from flipping the verdict.
   var ICONS = __TREND_ICONS__;
   var WORDS = {imp: 'improving', stable: 'stable', worse: 'getting worse'};
   function trend(pts, tol) {
@@ -1296,7 +1312,7 @@ _HIST_JS = r"""
     var prev = v.slice(0, -1).sort(function (a, b) { return a - b; });
     var h = prev.length >> 1;
     var med = prev.length % 2 ? prev[h] : (prev[h - 1] + prev[h]) / 2;
-    var thr = Math.max(tol / 2, 0.1);
+    var thr = Math.max(tol / 4, 0.1);
     var kind = last < med - thr ? 'imp' : (last > med + thr ? 'worse' : 'stable');
     var title = WORDS[kind] + ': |Δ| ' + last.toFixed(1) + '% vs ' +
         med.toFixed(1) + '% (median of the previous ' + prev.length +
@@ -1643,9 +1659,8 @@ def annotate_trends(model: dict[str, Any], history: dict[str, Any],
             for p in points]
         cell['value_history'] = [
             [p['value'], p['ref'], p['run_id']] for p in points]
-        cell['tol_pct'] = (abs(cell['tol'] / cell['ref']) * 100
-                           if cell['tol'] is not None and cell['ref']
-                           else default_tol_pct)
+        # The sparkline shades the green band, the same one the colours use
+        cell['tol_pct'] = GREEN_PCT
         if len(points) < 2 or cell['delta_pct'] is None:
             continue
         now_abs = abs(points[-1]['delta_pct'])
@@ -1955,8 +1970,8 @@ def render_html(model: dict[str, Any], title: str,
                                        ('stable', 'stable'),
                                        ('worse', 'getting worse')))
             + '<span class="note">trend: the latest |Δ| against the median '
-              'of the earlier runs of the Δ history window; stable within half '
-              'the tolerance</span></div>')
+              'of the earlier runs of the Δ history window; stable within a '
+              'quarter of the green band</span></div>')
 
     acc_txt = (f"{g['accuracy']:.1f}<small>%</small>"
                if g['accuracy'] is not None else '—')
@@ -1973,16 +1988,16 @@ def render_html(model: dict[str, Any], title: str,
   <div class="stat"><div class="v" id="t-ok">{
     f"{g['pct_ok']:.0f}<small>%</small>" if g['pct_ok'] is not None
     else '—'}</div>
-    <div class="k">within tolerance</div></div>
+    <div class="k">within {GREEN_PCT:g}% of the reference</div></div>
   <div class="stat"><div class="v" id="t-median">{_esc(_fmt_pct(g['median_pct']))}</div>
     <div class="k">median Δ (signed)</div></div>
   <div class="stat"><div class="v" id="t-worst">{_esc(worst_txt)}</div>
     <div class="k" id="t-worst-k">{_esc(worst_sub)}</div></div>
 </div>
 <div class="legend">
-  <span><i style="background:var(--ok)"></i>within tolerance</span>
-  <span><i style="background:var(--warn)"></i>≤ 2× tolerance</span>
-  <span><i style="background:var(--bad)"></i>&gt; 2× tolerance</span>
+  <span><i style="background:var(--ok)"></i>|Δ| ≤ {GREEN_PCT:g}%</span>
+  <span><i style="background:var(--warn)"></i>≤ {YELLOW_PCT:g}%</span>
+  <span><i style="background:var(--bad)"></i>&gt; {YELLOW_PCT:g}%</span>
   <span><i style="background:var(--muted)"></i>measured-only (no reference)</span>
 </div>{trend_legend}
 """
@@ -1990,7 +2005,8 @@ def render_html(model: dict[str, Any], title: str,
     scoreboard = ['<section><div class="sec-head"><h2>Per-target scoreboard'
                   '</h2></div><div class="scroll"><table><thead><tr>'
                   '<th class="txt">Target</th><th class="txt">Ref types</th>'
-                  '<th>Metrics</th><th>Referenced</th><th>Within tol</th>'
+                  f'<th>Metrics</th><th>Referenced</th>'
+                  f'<th>≤ {GREEN_PCT:g}%</th>'
                   '<th>Accuracy</th><th>Median Δ</th><th>Worst Δ</th>'
                   '</tr></thead><tbody>']
     coverage = []
@@ -2104,7 +2120,7 @@ def _print_summary(model: dict[str, Any], output: str,
               f"lower is better)")
     else:
         print("  Accuracy score:       n/a   (no referenced metrics)")
-    within = (f" · {g['pct_ok']:.0f}% within tolerance"
+    within = (f" · {g['pct_ok']:.0f}% within {GREEN_PCT:g}%"
               if g['pct_ok'] is not None else '')
     print(f"  Coverage:         {g['n_referenced']:>7} / {g['n_total']} "
           f"metrics referenced{within}")

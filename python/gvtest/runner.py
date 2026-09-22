@@ -985,6 +985,8 @@ class Runner():
         ref_type: str | None = None,
         value_min: float | None = None,
         value_max: float | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         self.bench_results.append({
             'test': test,
@@ -997,6 +999,8 @@ class Runner():
             'ref': ref,
             'tol': tol,
             'ref_type': ref_type,
+            'kind': kind,
+            'better': better,
         })
 
     def _get_git_info(self, *args: str) -> str | None:
@@ -1046,13 +1050,14 @@ class Runner():
             conn.execute(
                 "INSERT OR IGNORE INTO results "
                 "(run_id, test, target, metric, value, value_min, value_max, "
-                "description, reference, tolerance, ref_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "description, reference, tolerance, ref_type, kind, better) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, r.get('test', ''), r.get('target', ''),
                  r.get('metric', ''), r.get('value', 0),
                  r.get('value_min'), r.get('value_max'),
                  r.get('description', ''),
-                 r.get('ref'), r.get('tol'), r.get('ref_type'))
+                 r.get('ref'), r.get('tol'), r.get('ref_type'),
+                 r.get('kind'), r.get('better', 'lower'))
             )
         conn.commit()
         count = conn.execute(

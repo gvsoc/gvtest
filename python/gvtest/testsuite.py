@@ -34,6 +34,12 @@ class Target(object, metaclass=abc.ABCMeta):
 # (locked-in value measured on the current model — a regression lock).
 REF_TYPES = ('rtl', 'analytical', 'measured')
 
+# What a metric is measured for. 'benchmark' is application performance,
+# followed over time in the benchmark report; the calibration report keeps
+# taking every metric that declares a reference, benchmarks included, since
+# an application makes a good macro calibration point.
+KINDS = ('benchmark',)
+
 
 @dataclasses.dataclass(frozen=True)
 class Bench:
@@ -44,6 +50,13 @@ class Bench:
     absolute tolerance and a mandatory type (one of REF_TYPES) turns the
     metric into a calibration point for the bench DB and calibration
     report.
+
+    `kind` says which report a metric belongs in: 'benchmark' for the
+    performance of an application, followed over time in the benchmark
+    report; anything else (the default) only shows where it is relevant,
+    e.g. in the calibration report when it declares a reference. `better`
+    says which way is an improvement, which a performance report needs and
+    a calibration one does not.
     """
     name: str
     extract: str
@@ -51,6 +64,8 @@ class Bench:
     ref: float | None = None
     tol: float | None = None
     ref_type: str | None = None
+    kind: str | None = None
+    better: str = 'lower'
 
     @staticmethod
     def make(
@@ -59,7 +74,16 @@ class Bench:
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> Bench:
+        if kind is not None and kind not in KINDS:
+            raise ValueError(
+                f'bench {name}: unknown kind {kind!r} '
+                f'(allowed: {", ".join(KINDS)})')
+        if better not in ('lower', 'higher'):
+            raise ValueError(
+                f'bench {name}: better must be "lower" or "higher"')
         if tol is not None and tol_pct is not None:
             raise ValueError(
                 f'bench {name}: tol and tol_pct are mutually exclusive')
@@ -79,7 +103,8 @@ class Bench:
             tol = abs(ref) * tol_pct / 100
         return Bench(name=name, extract=extract,
                      desc=desc if desc is not None else name,
-                     ref=ref, tol=tol, ref_type=ref_type)
+                     ref=ref, tol=tol, ref_type=ref_type,
+                     kind=kind, better=better)
 
 
 class Command:

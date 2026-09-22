@@ -72,7 +72,7 @@ class TestDbMigration:
         conn = init_db(str(tmp_path / 'bench.sqlite'))
         cols = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
         assert {'reference', 'tolerance', 'ref_type',
-                'value_min', 'value_max'} <= cols
+                'value_min', 'value_max', 'kind', 'better'} <= cols
         assert conn.execute(
             "PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
         conn.close()
@@ -97,6 +97,8 @@ class TestDbMigration:
         assert 'builds' in tables
         cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
         assert {'build_id', 'uuid', 'uploaded_at'} <= cols
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
+        assert {'kind', 'better'} <= cols       # v5
         assert conn.execute(
             "SELECT build_id, uuid, uploaded_at FROM runs").fetchone() == \
             (None, None, None)
@@ -117,6 +119,79 @@ class TestDbMigration:
         conn = init_db(db_path)
         assert conn.execute(
             "PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# What a metric is measured for: kind and direction
+# ---------------------------------------------------------------------------
+
+class TestBenchKind:
+
+    def _test(self, tmp_path):
+        from gvtest.runner import Runner
+        cfg = tmp_path / 'testset.cfg'
+        cfg.write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('app')
+    test = testset.new_test('fir')
+    test.add_command(Shell('run', 'echo "cycles: 42"'))
+    test.set_bench_kind('benchmark')
+    test.add_bench('fir.cycles', r'cycles: (\\d+)', 'Cycles of one frame')
+    test.add_bench('fir.bw', r'cycles: (\\d+)', 'Throughput',
+                   better='higher')
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1)
+        r.add_testset(str(cfg))
+        return r
+
+    def test_kind_and_direction_reach_the_results(self, tmp_path):
+        r = self._test(tmp_path)
+        r.start()
+        r.run()
+        r.stop()
+        by_metric = {b['metric']: b for b in r.bench_results}
+        # the test's kind applies to both metrics, the direction is per metric
+        assert by_metric['fir.cycles']['kind'] == 'benchmark'
+        assert by_metric['fir.cycles']['better'] == 'lower'
+        assert by_metric['fir.bw']['better'] == 'higher'
+
+    def test_unknown_kind_or_direction_is_refused(self):
+        from gvtest.testsuite import Bench
+        with pytest.raises(ValueError, match='unknown kind'):
+            Bench.make('m', 'r', kind='perf')
+        with pytest.raises(ValueError, match='better must be'):
+            Bench.make('m', 'r', better='bigger')
+
+    def test_db_keeps_kind_and_direction(self, tmp_path):
+        db = _make_db(tmp_path, [_run([
+            {**_result('app:fir', 'tgt', 'fir.cycles', 42),
+             'kind': 'benchmark', 'better': 'lower'},
+            _result('el:dma', 'tgt', 'dma.cycles', 100)])])
+        conn = sqlite3.connect(db)
+        assert sorted(conn.execute(
+            'SELECT metric, kind, better FROM results')) == [
+            ('dma.cycles', None, 'lower'), ('fir.cycles', 'benchmark', 'lower')]
+        conn.close()
+
+    def test_tag_existing_results(self, tmp_path):
+        from gvtest.bench.db import tag
+        db = _make_db(tmp_path, [_run([
+            _result('pulpos:bench:events', 'tgt', 'cycles', 42),
+            _result('el:dma', 'tgt', 'dma.cycles', 100)])])
+        # A test that becomes a benchmark leaves its history untagged
+        assert tag(db, 'pulpos:bench:*', 'benchmark') == 1      # dry run
+        conn = sqlite3.connect(db)
+        assert conn.execute('SELECT COUNT(*) FROM results WHERE kind IS NOT '
+                            'NULL').fetchone()[0] == 0
+        conn.close()
+        assert tag(db, 'pulpos:bench:*', 'benchmark', better='lower',
+                   apply=True) == 1
+        conn = sqlite3.connect(db)
+        assert sorted(conn.execute('SELECT test, kind FROM results')) == [
+            ('el:dma', None), ('pulpos:bench:events', 'benchmark')]
         conn.close()
 
 

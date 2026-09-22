@@ -23,6 +23,8 @@ Usage:
     python -m gvtest.bench.db init   --db bench.sqlite
     python -m gvtest.bench.db insert --json results.json --db bench.sqlite
     python -m gvtest.bench.db list   --db bench.sqlite [--test PATTERN]
+    python -m gvtest.bench.db tag    --db bench.sqlite --test 'pulpos:bench:*' \
+                                     --kind benchmark [--apply]
     python -m gvtest.bench.db rename --db bench.sqlite --test OLD --to NEW
                                      [--metric-re RE --metric-sub SUB]
                                      [--apply]
@@ -37,6 +39,9 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
+
+from gvtest.testsuite import KINDS
 
 
 _SCHEMA = """
@@ -76,6 +81,8 @@ CREATE TABLE IF NOT EXISTS results (
     reference   REAL,
     tolerance   REAL,
     ref_type  TEXT,
+    kind        TEXT,
+    better      TEXT,
     UNIQUE(run_id, test, target, metric)
 );
 
@@ -94,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_results_test_target_metric
 """
 
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -103,8 +110,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     Version 2 added the reference/tolerance/ref_type columns; version 3
     added value_min/value_max (the spread of a metric measured over
     several activations); version 4 added the builds table and the
-    build_id/uuid/uploaded_at run columns used by the bench server.
-    Older rows read back NULL everywhere.
+    build_id/uuid/uploaded_at run columns used by the bench server;
+    version 5 added kind/better (what a metric is measured for, and which
+    way is an improvement). Older rows read back NULL everywhere.
     """
     if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
         return
@@ -118,7 +126,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
         for col, decl in (('reference', 'REAL'), ('tolerance', 'REAL'),
                           ('ref_type', 'TEXT'),
-                          ('value_min', 'REAL'), ('value_max', 'REAL')):
+                          ('value_min', 'REAL'), ('value_max', 'REAL'),
+                          ('kind', 'TEXT'), ('better', 'TEXT')):
             if col not in cols:
                 conn.execute(f"ALTER TABLE results ADD COLUMN {col} {decl}")
     if 'runs' in tables:
@@ -181,8 +190,8 @@ def insert_json(db_path: str, json_path: str) -> int | None:
         conn.execute(
             "INSERT OR IGNORE INTO results "
             "(run_id, test, target, metric, value, value_min, value_max, "
-            "description, reference, tolerance, ref_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "description, reference, tolerance, ref_type, kind, better) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 result.get('test', ''),
@@ -195,6 +204,8 @@ def insert_json(db_path: str, json_path: str) -> int | None:
                 result.get('ref'),
                 result.get('tol'),
                 result.get('ref_type'),
+                result.get('kind'),
+                result.get('better', 'lower'),
             )
         )
 
@@ -264,6 +275,46 @@ def rename(db_path: str, test: str, to_test: str | None = None,
     return len(moves)
 
 
+def tag(db_path: str, test: str, kind: str, better: str | None = None,
+        metric: str | None = None, apply: bool = False) -> int:
+    """Say what already-recorded results are measured for.
+
+    Declarations only reach the results recorded after them, so a test that
+    becomes a benchmark leaves its history untagged and out of the
+    benchmark report; this puts the tag on the rows already there.
+
+    Returns the number of rows tagged.
+    """
+    conn = init_db(db_path)
+    where = 'test LIKE ?'
+    params: list[Any] = [test.replace('*', '%')]
+    if metric is not None:
+        where += ' AND metric LIKE ?'
+        params.append(metric.replace('*', '%'))
+    rows = conn.execute(
+        f'SELECT COUNT(*), COUNT(DISTINCT test), COUNT(DISTINCT metric) '
+        f'FROM results WHERE {where}', params).fetchone()
+    print(f'{rows[0]} row(s), {rows[1]} test(s), {rows[2]} metric(s) '
+          f'-> kind={kind}' + (f', better={better}' if better else ''))
+    if not rows[0]:
+        conn.close()
+        return 0
+    if not apply:
+        print('Dry run; pass --apply to write.')
+        conn.close()
+        return rows[0]
+    sets, values = 'kind = ?', [kind]
+    if better is not None:
+        sets += ', better = ?'
+        values.append(better)
+    with conn:
+        conn.execute(f'UPDATE results SET {sets} WHERE {where}',
+                     values + params)
+    print(f'Tagged {rows[0]} row(s).')
+    conn.close()
+    return rows[0]
+
+
 def list_tests(db_path: str, pattern: str | None = None) -> None:
     """List distinct test/metric combinations in the database."""
     conn = init_db(db_path)
@@ -330,6 +381,20 @@ def main() -> None:
     p_rename.add_argument('--apply', action='store_true',
                           help='Write the changes (default: dry run)')
 
+    p_tag = subparsers.add_parser(
+        'tag', help='Say what already-recorded results are measured for')
+    p_tag.add_argument('--db', required=True, help='SQLite database path')
+    p_tag.add_argument('--test', required=True,
+                       help='Test whose results to tag (supports *)')
+    p_tag.add_argument('--metric', default=None,
+                       help='Only these metrics (supports *)')
+    p_tag.add_argument('--kind', required=True, choices=list(KINDS),
+                       help='What the metrics are measured for')
+    p_tag.add_argument('--better', default=None, choices=('lower', 'higher'),
+                       help='Which way is an improvement')
+    p_tag.add_argument('--apply', action='store_true',
+                       help='Write the changes (default: dry run)')
+
     p_list = subparsers.add_parser('list', help='List benchmarks')
     p_list.add_argument('--db', required=True, help='SQLite database path')
     p_list.add_argument('--test', default=None,
@@ -355,6 +420,10 @@ def main() -> None:
         if rename(args.db, args.test, args.to_test, args.metric_re,
                   args.metric_sub, args.apply) < 0:
             sys.exit(1)
+
+    elif args.command == 'tag':
+        tag(args.db, args.test, args.kind, args.better, args.metric,
+            args.apply)
 
     elif args.command == 'list':
         list_tests(args.db, args.test)

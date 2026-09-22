@@ -241,6 +241,8 @@ class TestRun(object):
                         ref=bench.ref,
                         tol=bench.tol,
                         ref_type=bench.ref_type,
+                        kind=bench.kind,
+                        better=bench.better,
                     )
 
 
@@ -531,9 +533,22 @@ class TestCommon(object):
 
         self.runner.declare_name(self.full_name)
         self.benchs: list[testsuite.Bench] = []
+        # What this test's metrics are measured for; see set_bench_kind()
+        self.bench_kind: str | None = None
         self._bench_check_added: bool = False
         self.runs: list[TestRun] = []
         self.dependencies: list[TestCommon] = []
+
+    def set_bench_kind(self, kind: str) -> None:
+        """What this test's metrics are measured for, for the ones that do
+        not say it themselves: 'benchmark' puts them in the benchmark
+        report, where the performance of an application is followed over
+        time."""
+        if kind not in testsuite.KINDS:
+            raise ValueError(
+                f'{self.full_name}: unknown bench kind {kind!r} '
+                f'(allowed: {", ".join(testsuite.KINDS)})')
+        self.bench_kind = kind
 
     # Shared implementation behind the concrete add_bench methods (see the
     # set_components() MRO note in testsuite.py for why add_bench itself
@@ -544,10 +559,14 @@ class TestCommon(object):
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         bench = testsuite.Bench.make(
             name, extract, desc,
-            ref=ref, tol=tol, tol_pct=tol_pct, ref_type=ref_type)
+            ref=ref, tol=tol, tol_pct=tol_pct, ref_type=ref_type,
+            kind=kind if kind is not None else self.bench_kind,
+            better=better)
         self.benchs.append(bench)
         # A bench with both a reference and a tolerance gates the test: add
         # (once) a real check command so an out-of-tolerance or missing
@@ -708,9 +727,12 @@ class TestImpl(TestCommon, testsuite.Test):
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         self._append_bench(name, extract, desc, ref=ref, tol=tol,
-                           tol_pct=tol_pct, ref_type=ref_type)
+                           tol_pct=tol_pct, ref_type=ref_type, kind=kind,
+                           better=better)
 
 
 class MakeTestImpl(TestCommon, testsuite.Test):
@@ -761,9 +783,12 @@ class MakeTestImpl(TestCommon, testsuite.Test):
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         self._append_bench(name, extract, desc, ref=ref, tol=tol,
-                           tol_pct=tol_pct, ref_type=ref_type)
+                           tol_pct=tol_pct, ref_type=ref_type, kind=kind,
+                           better=better)
 
 
 class GvrunTestImpl(testsuite.SdkTest, TestCommon):
@@ -811,9 +836,12 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         self._append_bench(name, extract, desc, ref=ref, tol=tol,
-                           tol_pct=tol_pct, ref_type=ref_type)
+                           tol_pct=tol_pct, ref_type=ref_type, kind=kind,
+                           better=better)
 
 
 class SdkTestImpl(testsuite.SdkTest, TestCommon):
@@ -853,9 +881,12 @@ class SdkTestImpl(testsuite.SdkTest, TestCommon):
         tol: float | None = None,
         tol_pct: float | None = None,
         ref_type: str | None = None,
+        kind: str | None = None,
+        better: str = 'lower',
     ) -> None:
         self._append_bench(name, extract, desc, ref=ref, tol=tol,
-                           tol_pct=tol_pct, ref_type=ref_type)
+                           tol_pct=tol_pct, ref_type=ref_type, kind=kind,
+                           better=better)
 
 
 class NetlistPowerSdkTestImpl(SdkTestImpl):

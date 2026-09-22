@@ -430,6 +430,12 @@ h1 { font-size:30px; line-height:1.15; margin:6px 0 4px; font-weight:650; }
 .hwin, .bgroup { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .toolbar button { padding:3px 11px; font-size:12px; }
 .mname { font-weight:500; }
+.mfull { margin:6px 0 2px; font-size:11.5px; color:var(--muted);
+  white-space:normal; }
+.mfull code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px; color:var(--ink-2); background:var(--page);
+  border:1px solid var(--grid); border-radius:3px; padding:0 4px;
+  user-select:all; }
 .mdesc { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
   white-space:normal; max-width:72ch; }
 details.mdoc > summary { cursor:pointer; list-style:none; }
@@ -785,20 +791,25 @@ _REF_LABELS = {'rtl': 'RTL', 'analytical': 'analytical', 'measured': 'locked'}
 
 
 def _metric_cell(metric: str, desc: str, depth: int = 0,
-                 cell: dict[str, Any] | None = None) -> str:
-    """Metric name over its one-sentence summary; the rest of the description
-    and a chart of the measured value against its reference over the runs
-    open on click (a <details>; the chart is drawn by _VCHART_JS). In the
-    tree the levels above already carry the dotted prefix, so only the last
-    part of the name is shown; the full name is the tooltip."""
+                 cell: dict[str, Any] | None = None,
+                 test: str | None = None) -> str:
+    """Metric name over its one-sentence summary; its full names, the rest of
+    the description and a chart of the measured value against its reference
+    over the runs open on click (a <details>; the chart is drawn by
+    _VCHART_JS). In the tree the levels above already carry the test and the
+    dotted prefix, so the row shows only the last part of the name; the full
+    ones are in the open part, where they can be copied.
+    """
     summary, details = split_description(desc)
     head = (f'<span class="mname" title="{_esc(metric)}">'
             f'{_esc(metric.rsplit(".", 1)[-1])}</span>'
             f'<span class="mdesc">{_esc(summary)}</span>')
     values = cell.get('value_history') if cell else None
-    if not details and not values:
-        return f'<td class="txt"{_indent(depth)}>{head}</td>'
-    body = f'<p>{_esc(details)}</p>' if details else ''
+    # The row's full name, spelled out for copying: the test as gvtest takes
+    # it (--test), then the metric it declares.
+    full = f'{test}:{metric}' if test else metric
+    body = f'<p class="mfull">metric: <code>{_esc(full)}</code></p>'
+    body += f'<p>{_esc(details)}</p>' if details else ''
     if values:
         label = _REF_LABELS.get(cell.get('ref_type'), 'reference')
         data = json.dumps(values, separators=(',', ':'))
@@ -1024,8 +1035,9 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
         ref_title = ('' if cell0 is None
                      else f' title="{_esc(_cell_title(cell0))}"')
         row_class = '' if row['referenced'] else ' class="mo"'
-        out.append(f'<tr{row_class} data-anc="{anc}">'
-                   f'{_metric_cell(row["metric"], row["desc"], depth, cell0)}')
+        metric_td = _metric_cell(row['metric'], row['desc'], depth, cell0,
+                                 row['test'])
+        out.append(f'<tr{row_class} data-anc="{anc}">{metric_td}')
         if spread:
             cell = cells[0]
             title = f' title="{_esc(_cell_title(cell))}"' if cell else ''
@@ -1908,8 +1920,7 @@ def render_html(model: dict[str, Any], title: str,
                                        (100, 'last 100'), (0, 'all')))
             + '</div>')
     docs_html = ''
-    if any(split_description(c['desc'])[1] or c.get('value_history')
-           for c in model['cells']):
+    if model['cells']:      # every metric row opens onto its full names
         docs_html = ('<button type="button" class="docs-all" '
                      'aria-pressed="false">Show all descriptions</button>')
     tree_html = ''

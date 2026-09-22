@@ -236,20 +236,24 @@ class TestDescriptions:
         # Long description: summary in the row, the rest behind a <details>
         assert ('<details class="mdoc"><summary><span class="mname" '
                 'title="long">long</span><span class="mdesc">Cycles of one '
-                '4 KB copy.</span></summary><p>The core programs the copy and '
-                'polls its end. The reference is the RTL.</p></details>'
+                '4 KB copy.</span></summary><p class="mfull">metric: '
+                '<code>t:a:long</code></p>'
+                '<p>The core programs the copy and polls its end. '
+                'The reference is the RTL.</p></details>') in html_str
+        # One-sentence description: the row still opens, onto its names
+        assert ('<span class="mname" title="short">short</span>'
+                '<span class="mdesc">short</span></summary>'
+                '<p class="mfull">metric: <code>t:a:short</code></p>'
                 ) in html_str
-        # One-sentence description: no <details>
-        assert ('<td class="txt" style="padding-left:30px"><span class="mname" '
-                'title="short">short</span><span class="mdesc">short</span>'
-                '</td>') in html_str
         assert 'class="docs-all"' in html_str
 
-    def test_no_docs_button_without_details(self, tmp_path):
+    def test_rows_open_onto_their_full_names(self, tmp_path):
+        # Even with nothing else to show, a row opens onto the names to copy
         html_str = calibration.render_html(
             self._model(tmp_path, 'Just a summary'), 'descs')
-        assert 'class="docs-all"' not in html_str
-        assert '<details class="mdoc">' not in html_str
+        assert 'class="docs-all"' in html_str
+        assert ('<p class="mfull">metric: <code>t:a:long</code></p>'
+                '</details>') in html_str
 
     def test_trend_report_shows_summary(self):
         from gvtest.bench.report import render_report_html
@@ -346,7 +350,9 @@ class TestCalibrationTree:
         model, hist = self._model(tmp_path, runs=2)
         html_str = calibration.render_html(model, 'tree', history=hist)
         m = re.search(r'title="a\.b\.x">x</span><span class="mdesc">a\.b\.x'
-                      r'</span></summary><div class="vchart" data-v="([^"]*)" '
+                      r'</span></summary><p class="mfull">metric: '
+                      r'<code>t:one:a\.b\.x</code></p>'
+                      r'<div class="vchart" data-v="([^"]*)" '
                       r'data-ref="RTL"></div></details>', html_str)
         values = json.loads(html.unescape(m.group(1)))
         assert values == [[110.0, 100.0, 1], [120.0, 100.0, 2]]

@@ -1223,3 +1223,82 @@ class TestImprovementCli:
         with unittest.mock.patch('sys.argv', argv):
             assert calibration.main() == 1
         assert 'did not improve' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Benchmark report: how the applications perform over the runs
+# ---------------------------------------------------------------------------
+
+class TestBenchmarkReport:
+
+    def _db(self, tmp_path):
+        """Three runs: cycles falling, bandwidth rising, plus a metric that
+        is only a calibration point (no kind)."""
+        from gvtest.bench import benchmarks
+        runs = []
+        for i, (cycles, bw) in enumerate(((1000, 50.0), (990, 50.5),
+                                          (900, 55.0))):
+            results = [
+                {**_result('app:fir', 'gap9', 'fir.cycles', cycles),
+                 'kind': 'benchmark', 'better': 'lower'},
+                {**_result('app:fir', 'gap9', 'fir.bw', bw),
+                 'kind': 'benchmark', 'better': 'higher'},
+                _result('el:dma', 'gap9', 'dma.cycles', 140, ref=143,
+                        src='rtl')]
+            runs.append(_run(results,
+                             timestamp=f'2026-07-{16 + i}T10:00:00+00:00'))
+        return _make_db(tmp_path, runs)
+
+    def _model(self, tmp_path, **kwargs):
+        from gvtest.bench import benchmarks
+        conn = sqlite3.connect(self._db(tmp_path))
+        model = benchmarks.report(conn, **kwargs)
+        conn.close()
+        return model
+
+    def test_only_tagged_benchmarks(self, tmp_path):
+        model = self._model(tmp_path)
+        assert {c['metric'] for c in model['cells']} == {'fir.cycles',
+                                                         'fir.bw'}
+
+    def test_gain_follows_the_direction(self, tmp_path):
+        model = self._model(tmp_path, baseline_run=1)
+        by_metric = {c['metric']: c for c in model['cells']}
+        # 990 -> 900 cycles and 50.5 -> 55 bytes/cycle are both improvements
+        assert round(by_metric['fir.cycles']['gain_prev_pct'], 1) == 9.1
+        assert round(by_metric['fir.bw']['gain_prev_pct'], 1) == 8.9
+        # against the first run: 1000 -> 900 and 50 -> 55
+        assert round(by_metric['fir.cycles']['gain_base_pct'], 1) == 10.0
+        assert round(by_metric['fir.bw']['gain_base_pct'], 1) == 10.0
+        g = model['global']
+        assert (g['n_faster'], g['n_slower']) == (2, 0)
+        assert round(g['gain_prev_pct'], 1) == 9.0     # geomean
+
+    def test_a_slower_run_reads_as_such(self, tmp_path):
+        from gvtest.bench import benchmarks
+        model = self._model(tmp_path)
+        cell = dict(next(c for c in model['cells']
+                         if c['metric'] == 'fir.cycles'))
+        cell['value'] = 1100                  # slower than the 900 before it
+        assert benchmarks._verdict(benchmarks._gain_pct(
+            benchmarks._change_pct(1100, 900), 'lower')) == 'bad'
+        # a change inside the noise band is neither
+        assert benchmarks._verdict(benchmarks._gain_pct(
+            benchmarks._change_pct(901, 900), 'lower')) == 'warn'
+
+    def test_level_index_and_page(self, tmp_path):
+        from gvtest.bench import benchmarks
+        model = self._model(tmp_path, baseline_run=1)
+        html_str = benchmarks.render_html(model, 'Benchmarks')
+        # the levels carry the geomean, the leaves their value
+        assert '<th class="grp">Value</th>' in html_str
+        assert 'vs baseline' in html_str and 'baseline: run 1' in html_str
+        assert '>900<' in html_str and '>55<' in html_str
+        # a level's index: where its benchmarks stand against their first run
+        run_order = [r['run_id'] for r in model['history']['runs']]
+        index = benchmarks._index_series(model['cells'], run_order)
+        # run 2 is 1% faster than run 1 (990/1000, 50.5/50), run 3 is 10.6%
+        assert [round(p[0], 1) for p in index] == [0.0, 1.0, 10.6]
+        assert [p[1] for p in index] == ['warn', 'warn', 'ok']
+        # the calibration-only metric is not in the page
+        assert 'dma.cycles' not in html_str

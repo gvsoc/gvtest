@@ -66,7 +66,8 @@ GROUND_TRUTH = ('rtl', 'analytical')
 def _filters(run: int | None = None, platform: str | None = None,
              test: str | None = None, target: str | None = None,
              exclude_platform: str | None = None, branch: str | None = None,
-             job: str | None = None) -> tuple[str, list[Any]]:
+             job: str | None = None,
+             kind: str | None = None) -> tuple[str, list[Any]]:
     """The WHERE clauses shared by the two queries below.
 
     branch/job select where the results come from: the branch the run was
@@ -79,7 +80,8 @@ def _filters(run: int | None = None, platform: str | None = None,
                           (' AND ru.platform = ?', platform),
                           (' AND ru.platform != ?', exclude_platform),
                           (' AND ru.git_branch = ?', branch),
-                          (' AND b.job = ?', job)):
+                          (' AND b.job = ?', job),
+                          (' AND r.kind = ?', kind)):
         if value is not None:
             sql += clause
             params.append(value)
@@ -100,6 +102,7 @@ def query_results(
     exclude_platform: str | None = None,
     branch: str | None = None,
     job: str | None = None,
+    kind: str | None = None,
 ) -> dict[Key, dict[str, Any]]:
     """Latest result per (test, target, metric) matching the filters.
 
@@ -108,12 +111,12 @@ def query_results(
     value wins.
     """
     where, params = _filters(run, platform, test, target, exclude_platform,
-                             branch, job)
+                             branch, job, kind)
     query = """
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
                ru.id, ru.timestamp, ru.git_commit, ru.platform,
-               r.value_min, r.value_max
+               r.value_min, r.value_max, r.kind, r.better
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
         LEFT JOIN builds b ON ru.build_id = b.id
@@ -134,6 +137,7 @@ def query_history(
     exclude_platform: str | None = None,
     branch: str | None = None,
     job: str | None = None,
+    kind: str | None = None,
 ) -> dict[Key, list[dict[str, Any]]]:
     """Every result per (test, target, metric), oldest run first.
 
@@ -141,12 +145,12 @@ def query_history(
     calibration of a metric can be followed across runs/commits.
     """
     where, params = _filters(None, platform, test, target, exclude_platform,
-                             branch, job)
+                             branch, job, kind)
     query = """
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
                ru.id, ru.timestamp, ru.git_commit, ru.platform,
-               r.value_min, r.value_max
+               r.value_min, r.value_max, r.kind, r.better
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
         LEFT JOIN builds b ON ru.build_id = b.id
@@ -163,7 +167,7 @@ def _iter_cells(conn: sqlite3.Connection, query: str, params: list[Any]):
     for row in conn.execute(query, params):
         (test_name, target_name, metric, value, desc,
          ref, tol, ref_type, run_id, timestamp, commit, run_platform,
-         value_min, value_max) = row
+         value_min, value_max, kind, better) = row
         yield {
             'test': test_name,
             'target': target_name,
@@ -186,6 +190,8 @@ def _iter_cells(conn: sqlite3.Connection, query: str, params: list[Any]):
             'timestamp': timestamp,
             'git_commit': commit,
             'platform': run_platform,
+            'kind': kind,
+            'better': better or 'lower',
         }
 
 

@@ -286,17 +286,23 @@ class TestCalibrationTree:
         return model, hist
 
     def _groups(self, html_str):
-        return re.findall(
-            r'<tr class="grow" data-gid="(\d+)" data-key="([^"]*)" '
-            r'data-anc="([^"]*)">.*?<button[^>]*>([^<]*)</button>'
-            r'<span class="gmeta">([^<]*)</span></td>'
-            r'<td class="num grp[^"]*"[^>]*>([^<]*)</td>', html_str)
+        """[(gid, key, ancestors, label, meta, 'avg x%', 'max y%')]"""
+        out = []
+        for gid, key, anc, label, meta, cell in re.findall(
+                r'<tr class="grow" data-gid="(\d+)" data-key="([^"]*)" '
+                r'data-anc="([^"]*)">.*?<button[^>]*>([^<]*)</button>'
+                r'<span class="gmeta">([^<]*)</span></td>'
+                r'<td class="num grp stack">(.*?)</td>', html_str):
+            figures = re.findall(r'<div class="lv[^"]*"[^>]*>([^<]*)</div>',
+                                 cell)
+            out.append((gid, key, anc, label, meta, *figures))
+        return out
 
     def test_levels_and_averages(self, tmp_path):
         model, hist = self._model(tmp_path)
         html_str = calibration.render_html(model, 'tree', history=hist)
-        groups = {label: (gid, anc, meta, avg)
-                  for gid, key, anc, label, meta, avg in self._groups(html_str)}
+        groups = {g[3]: (g[0], g[2], g[4], g[5], g[6])
+                  for g in self._groups(html_str)}
         # The test names open one level per colon-separated part, and the
         # single-child chain one > a is merged into one level
         assert set(groups) == {'t', 'one › a', 'b', 'c', 'two'}
@@ -306,12 +312,12 @@ class TestCalibrationTree:
         assert top[1] == root[0]                      # the test sits under it
         assert groups['two'][1] == root[0]
         assert groups['b'][1] == f'{root[0]} {top[0]}'  # b sits under both
-        assert root[3] == 'avg 10.5%'                 # (10 + 30 + 2 + 0) / 4
-        assert top[2].startswith('3 metrics · 33% within tolerance · '
-                                 'worst -30.0% (b.y)')
-        assert top[3] == 'avg 14.0%'                  # (10 + 30 + 2) / 3
-        assert groups['b'][3] == 'avg 20.0%'
-        assert groups['two'][3] == 'avg 0.0%'
+        assert root[3:] == ('avg 10.5%',              # (10 + 30 + 2 + 0) / 4
+                            'max 30.0%')             # the worst of the four
+        assert top[2] == '3 metrics · 33% within tolerance · worst: b.y'
+        assert top[3:] == ('avg 14.0%', 'max 30.0%')  # (10 + 30 + 2) / 3
+        assert groups['b'][3:] == ('avg 20.0%', 'max 30.0%')
+        assert groups['two'][3:] == ('avg 0.0%', 'max 0.0%')
         # Leaves hang below every level above them
         assert re.search(r'<tr data-anc="%s %s %s"><td class="txt" '
                          r'style="padding-left:[0-9]+px"><details class="mdoc">'
@@ -320,15 +326,19 @@ class TestCalibrationTree:
                          % (root[0], top[0], groups['b'][0]), html_str)
         assert 'class="tree-all" data-open="1"' in html_str
 
-    def test_level_history_is_mean_abs_delta(self, tmp_path):
+    def test_level_history_is_mean_then_max(self, tmp_path):
         model, hist = self._model(tmp_path, runs=2)
         html_str = calibration.render_html(model, 'tree', history=hist)
         m = re.search(r'<button type="button" class="gt" aria-expanded="true">'
-                      r'b</button>.*?<td class="dh" data-h="([^"]*)"',
-                      html_str)
-        points = json.loads(html.unescape(m.group(1)))
-        assert [p[0] for p in points] == [20.0, 25.0]   # (10+30)/2, (20+30)/2
-        assert [p[1] for p in points] == ['bad', 'bad']
+                      r'b</button>.*?<td class="dh stack">(.*?)</td>',
+                      html_str, re.S)
+        series = [json.loads(html.unescape(d)) for d in
+                  re.findall(r'<div class="sp" data-h="([^"]*)"', m.group(1))]
+        assert len(series) == 2
+        # mean |Δ| then max |Δ|, over the two runs
+        assert [p[0] for p in series[0]] == [20.0, 25.0]
+        assert [p[0] for p in series[1]] == [30.0, 30.0]
+        assert [p[1] for p in series[1]] == ['bad', 'bad']
 
     def test_value_chart_in_description(self, tmp_path):
         # a.b.x has a one-sentence description (its name), but a history:
@@ -743,14 +753,14 @@ class TestCalibrationHistory:
                 '[2,"commit1","2026-07-17T10:00"],'
                 '[3,"commit2","2026-07-18T10:00"]]</script>') in html_str
 
-        m = re.search(r'<td class="dh" data-h="([^"]*)" data-tol="5">',
-                      html_str)
+        m = re.search(r'<td class="dh"><div class="sp" data-h="([^"]*)" '
+                      r'data-tol="5">', html_str)
         assert json.loads(html.unescape(m.group(1))) == cell['delta_history']
         # Window buttons, last 10 selected by default
         for n in ('5', '10', '100', '0'):
             assert f'data-n="{n}"' in html_str
         assert 'data-n="10" aria-pressed="true"' in html_str
-        assert 'td.dh[data-h]' in html_str      # the drawing script
+        assert "'.sp[data-h]'" in html_str      # the drawing script
 
     def test_metric_added_later_keeps_the_run_axis(self, tmp_path):
         # 'late' is only measured in the last of the three runs: its point

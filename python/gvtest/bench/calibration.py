@@ -458,7 +458,13 @@ tr.grow button.gt[aria-expanded="false"]::before { content:"\\25B8"; }
 .gmeta { display:block; color:var(--muted); font-size:11.5px;
   margin-left:1.1em; white-space:normal; }
 td.dh { padding:3px 10px; vertical-align:middle; white-space:nowrap; }
-td.dh > svg { display:inline-block; vertical-align:middle; overflow:hidden; }
+.sp { height:26px; white-space:nowrap; }
+.sp > svg { display:inline-block; vertical-align:middle; overflow:hidden; }
+/* A level stacks two figures (avg, max) against its two sparklines. */
+td.stack { vertical-align:middle; }
+td.stack .sp + .sp, td.stack .lv + .lv { margin-top:3px; }
+.lv { display:flex; align-items:center; justify-content:flex-end; height:26px;
+  padding:0 4px; border-radius:3px; }
 .trw { display:inline-block; vertical-align:middle; margin-left:8px; }
 .tr { display:inline-block; vertical-align:middle; }
 .tr .ar { fill:none; stroke-width:1.8; stroke-linecap:round;
@@ -516,10 +522,10 @@ td.num { text-align:right;
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:12.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 td.grp { border-left:1px solid var(--grid); }
-td.err.ok { color:var(--ok-text); background:var(--ok-bg); }
-td.err.warn { color:var(--warn-text); background:var(--warn-bg);
+td.err.ok, .lv.err.ok { color:var(--ok-text); background:var(--ok-bg); }
+td.err.warn, .lv.err.warn { color:var(--warn-text); background:var(--warn-bg);
   font-weight:600; }
-td.err.bad { color:var(--bad-text); background:var(--bad-bg);
+td.err.bad, .lv.err.bad { color:var(--bad-text); background:var(--bad-bg);
   font-weight:650; }
 tr.mo td { color:var(--muted); }
 .src { display:inline-block; font-size:11px; color:var(--ink-2);
@@ -849,9 +855,11 @@ def _tree_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _group_history(cells: list[dict[str, Any]], tol_pct: float,
-                   run_order: list[int]) -> list[list[Any]]:
-    """Mean |Δ| of a level's metrics per run, in the per-row history format
-    ([value, severity, run id]); a run counts the metrics it has."""
+                   run_order: list[int], agg: str = 'mean') -> list[list[Any]]:
+    """Mean (or max) |Δ| of a level's metrics per run, in the per-row
+    history format ([value, severity, run id]); a run counts the metrics it
+    has."""
+    combine = statistics.mean if agg == 'mean' else max
     per_run: dict[int, list[float]] = defaultdict(list)
     for c in cells:
         for delta, _, run_id in c.get('delta_history') or []:
@@ -861,22 +869,26 @@ def _group_history(cells: list[dict[str, Any]], tol_pct: float,
         values = per_run.get(run_id)
         if not values:
             continue
-        mean = statistics.mean(values)
-        sev = ('ok' if mean <= tol_pct
-               else 'warn' if mean <= 2 * tol_pct else 'bad')
-        points.append([round(mean, 3), sev, run_id])
+        value = combine(values)
+        sev = ('ok' if value <= tol_pct
+               else 'warn' if value <= 2 * tol_pct else 'bad')
+        points.append([round(value, 3), sev, run_id])
     return points
 
 
+def _spark(points: list[list[Any]], tol_pct: float) -> str:
+    """One sparkline, drawn client-side (_HIST_JS) so the run window can be
+    changed without regenerating the page."""
+    data = json.dumps(points, separators=(',', ':'))
+    return f'<div class="sp" data-h="{_esc(data)}" data-tol="{tol_pct:g}"></div>'
+
+
 def _history_cell(cell: dict[str, Any] | None) -> str:
-    """Δ over the recent runs; the sparkline is drawn client-side (_HIST_JS)
-    so the run window can be changed without regenerating the page."""
+    """Δ of one metric over the recent runs."""
     points = cell.get('delta_history') if cell else None
     if not points:
         return '<td class="dh"></td>'
-    data = json.dumps(points, separators=(',', ':'))
-    return (f'<td class="dh" data-h="{_esc(data)}" '
-            f'data-tol="{cell["tol_pct"]:g}"></td>')
+    return f'<td class="dh">{_spark(points, cell["tol_pct"])}</td>'
 
 
 def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
@@ -961,16 +973,23 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
             name = worst['metric']
             if name.startswith(node['prefix']):
                 name = name[len(node['prefix']):]
-            meta += f" · worst {_fmt_pct(worst['delta_pct'])} ({name})"
-        acc = stats['accuracy']
-        if acc is None:
-            delta_td = '<td class="num grp">—</td>'
-        else:
-            sev = ('ok' if acc <= default_tol_pct
-                   else 'warn' if acc <= 2 * default_tol_pct else 'bad')
-            delta_td = (f'<td class="num grp err {sev}" title="mean |Δ| of '
-                        f'{stats["n_accuracy"]} metric(s) against their '
-                        f'reference">avg {acc:.1f}%</td>')
+            meta += f' · worst: {name}'
+        # A level carries two figures, stacked so they line up with the two
+        # sparklines beside them: the mean |Δ| of its metrics and the worst.
+        accs = [c['acc_err_pct'] for c in cells
+                if c.get('acc_err_pct') is not None]
+        lines = []
+        for label, value in (('avg', stats['accuracy']),
+                             ('max', max(accs) if accs else None)):
+            if value is None:
+                lines.append(f'<div class="lv">{label} —</div>')
+                continue
+            sev = ('ok' if value <= default_tol_pct
+                   else 'warn' if value <= 2 * default_tol_pct else 'bad')
+            lines.append(f'<div class="lv err {sev}" title="{label} |Δ| of '
+                         f'{len(accs)} metric(s) against their reference">'
+                         f'{label} {value:.1f}%</div>')
+        delta_td = f'<td class="num grp stack">{"".join(lines)}</td>'
         out.append(f'<tr class="grow" data-gid="{gid}" '
                    f'data-key="{_esc(key)}" data-anc="{anc}">'
                    f'<td class="txt tree"{_indent(depth)}>'
@@ -981,10 +1000,11 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
         if spread:
             out.append('<td colspan="2"></td>')
         if with_history:
-            points = _group_history(cells, default_tol_pct,
-                                    run_order or [])
-            out.append(_history_cell({'delta_history': points,
-                                      'tol_pct': default_tol_pct}))
+            sparks = ''.join(
+                _spark(_group_history(cells, default_tol_pct, run_order or [],
+                                      agg), default_tol_pct)
+                for agg in ('mean', 'max'))
+            out.append(f'<td class="dh stack">{sparks}</td>')
         out.append(f'<td colspan="{n_rest}"></td></tr>')
 
     def walk(node: dict[str, Any], key: str, anc: str, depth: int) -> None:
@@ -1225,7 +1245,7 @@ _AXIS_JS = r"""
 _HIST_JS = r"""
 (function () {
   'use strict';
-  var cells = document.querySelectorAll('td.dh[data-h]');
+  var cells = document.querySelectorAll('.sp[data-h]');
   var btns = Array.prototype.slice.call(
       document.querySelectorAll('.hwin button[data-n]'));
   if (!cells.length) return;
@@ -1260,12 +1280,12 @@ _HIST_JS = r"""
         '</span>';
   }
 
-  function draw(td, n) {
-    var all = JSON.parse(td.getAttribute('data-h'));
+  function draw(el, n) {
+    var all = JSON.parse(el.getAttribute('data-h'));
     var win = AXIS.window(n);
     var pts = all.filter(function (p) { return win.has(p[2]); });
-    if (!pts.length) { td.textContent = ''; return; }
-    var tol = parseFloat(td.getAttribute('data-tol')) || 0;
+    if (!pts.length) { el.textContent = ''; return; }
+    var tol = parseFloat(el.getAttribute('data-tol')) || 0;
     var ds = pts.map(function (p) { return p[0]; });
     // Scale to the data so movement stays visible on metrics far from their
     // reference, but never tighter than the tolerance band's width, so noise
@@ -1304,14 +1324,14 @@ _HIST_JS = r"""
           '" r="' + (last ? 2.8 : 2.2) + '"><title>' +
           esc(fmt(p[0]) + ' · ' + AXIS.label(p[2])) + '</title></circle>';
     });
-    td.innerHTML = s + '</svg>' + trend(pts, tol);
+    el.innerHTML = s + '</svg>' + trend(pts, tol);
   }
 
   function apply(n) {
     btns.forEach(function (b) {
       b.setAttribute('aria-pressed', String(+b.getAttribute('data-n') === n));
     });
-    Array.prototype.forEach.call(cells, function (td) { draw(td, n); });
+    Array.prototype.forEach.call(cells, function (el) { draw(el, n); });
     try { localStorage.setItem('calib-hwin', String(n)); } catch (e) {}
   }
 

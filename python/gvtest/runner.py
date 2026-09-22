@@ -422,7 +422,7 @@ class Runner():
             report = {
                 'timestamp': _dt.now(_tz.utc).isoformat(),
                 'git_commit': self._get_git_info('rev-parse', 'HEAD'),
-                'git_branch': self._get_git_info('rev-parse', '--abbrev-ref', 'HEAD'),
+                'git_branch': self._git_branch(),
                 'platform': self.platform or 'gvsoc',
                 'results': self.bench_results,
             }
@@ -1007,6 +1007,26 @@ class Runner():
             ).decode().strip()
         except Exception:
             return None
+
+    def _git_branch(self) -> str | None:
+        """The branch the results belong to.
+
+        CI checks out a commit, not a branch, and git then answers 'HEAD';
+        the branch is in the environment instead (Jenkins' GIT_BRANCH /
+        BRANCH_NAME, GitLab CI's CI_COMMIT_REF_NAME). Without it the bench
+        reports cannot tell a branch run from a main-line one.
+        """
+        branch = self._get_git_info('rev-parse', '--abbrev-ref', 'HEAD')
+        if branch not in (None, 'HEAD'):
+            return branch
+        for var in ('GVTEST_BENCH_BRANCH', 'GIT_BRANCH', 'BRANCH_NAME',
+                    'CI_COMMIT_REF_NAME'):
+            value = os.environ.get(var)
+            if value:
+                # Jenkins reports the remote-tracking name
+                return value.split('/', 1)[1] if value.startswith('origin/') \
+                    else value
+        return branch
 
     def _write_bench_db(self, report: dict[str, Any]) -> None:
         from gvtest.bench.db import init_db

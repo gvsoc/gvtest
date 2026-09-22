@@ -63,6 +63,34 @@ GROUND_TRUTH = ('rtl', 'analytical')
 
 # -------------------------------------------------------------------- query
 
+def _filters(run: int | None = None, platform: str | None = None,
+             test: str | None = None, target: str | None = None,
+             exclude_platform: str | None = None, branch: str | None = None,
+             job: str | None = None) -> tuple[str, list[Any]]:
+    """The WHERE clauses shared by the two queries below.
+
+    branch/job select where the results come from: the branch the run was
+    made on, or the CI job that produced it (a run recorded before branches
+    were recorded properly says 'HEAD', so the job is the way to tell a
+    main-line run from a branch one).
+    """
+    sql, params = '', []
+    for clause, value in ((' AND ru.id = ?', run),
+                          (' AND ru.platform = ?', platform),
+                          (' AND ru.platform != ?', exclude_platform),
+                          (' AND ru.git_branch = ?', branch),
+                          (' AND b.job = ?', job)):
+        if value is not None:
+            sql += clause
+            params.append(value)
+    for clause, value in ((' AND r.test LIKE ?', test),
+                          (' AND r.target LIKE ?', target)):
+        if value is not None:
+            sql += clause
+            params.append(value.replace('*', '%'))
+    return sql, params
+
+
 def query_results(
     conn: sqlite3.Connection,
     run: int | None = None,
@@ -70,6 +98,8 @@ def query_results(
     test: str | None = None,
     target: str | None = None,
     exclude_platform: str | None = None,
+    branch: str | None = None,
+    job: str | None = None,
 ) -> dict[Key, dict[str, Any]]:
     """Latest result per (test, target, metric) matching the filters.
 
@@ -77,6 +107,8 @@ def query_results(
     appears in several runs (or several times in one run), the most recent
     value wins.
     """
+    where, params = _filters(run, platform, test, target, exclude_platform,
+                             branch, job)
     query = """
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
@@ -84,25 +116,9 @@ def query_results(
                r.value_min, r.value_max
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
+        LEFT JOIN builds b ON ru.build_id = b.id
         WHERE 1=1
-    """
-    params: list[Any] = []
-    if run is not None:
-        query += " AND ru.id = ?"
-        params.append(run)
-    if platform is not None:
-        query += " AND ru.platform = ?"
-        params.append(platform)
-    if exclude_platform is not None:
-        query += " AND ru.platform != ?"
-        params.append(exclude_platform)
-    if test is not None:
-        query += " AND r.test LIKE ?"
-        params.append(test.replace('*', '%'))
-    if target is not None:
-        query += " AND r.target LIKE ?"
-        params.append(target.replace('*', '%'))
-    query += " ORDER BY ru.timestamp ASC, ru.id ASC"
+    """ + where + " ORDER BY ru.timestamp ASC, ru.id ASC"
 
     latest: dict[Key, dict[str, Any]] = {}
     for row in _iter_cells(conn, query, params):
@@ -116,12 +132,16 @@ def query_history(
     test: str | None = None,
     target: str | None = None,
     exclude_platform: str | None = None,
+    branch: str | None = None,
+    job: str | None = None,
 ) -> dict[Key, list[dict[str, Any]]]:
     """Every result per (test, target, metric), oldest run first.
 
     Same shape as query_results but keeps the whole series so the
     calibration of a metric can be followed across runs/commits.
     """
+    where, params = _filters(None, platform, test, target, exclude_platform,
+                             branch, job)
     query = """
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
@@ -129,22 +149,9 @@ def query_history(
                r.value_min, r.value_max
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
+        LEFT JOIN builds b ON ru.build_id = b.id
         WHERE 1=1
-    """
-    params: list[Any] = []
-    if platform is not None:
-        query += " AND ru.platform = ?"
-        params.append(platform)
-    if exclude_platform is not None:
-        query += " AND ru.platform != ?"
-        params.append(exclude_platform)
-    if test is not None:
-        query += " AND r.test LIKE ?"
-        params.append(test.replace('*', '%'))
-    if target is not None:
-        query += " AND r.target LIKE ?"
-        params.append(target.replace('*', '%'))
-    query += " ORDER BY ru.timestamp ASC, ru.id ASC"
+    """ + where + " ORDER BY ru.timestamp ASC, ru.id ASC"
 
     series: dict[Key, list[dict[str, Any]]] = defaultdict(list)
     for row in _iter_cells(conn, query, params):
@@ -2134,6 +2141,17 @@ def main() -> int:
                         help='Filter tests (glob, e.g. "spatz:*")')
     parser.add_argument('--target', default=None,
                         help='Filter targets (glob)')
+    parser.add_argument('--branch', default=None,
+                        help='Only runs made on this branch')
+    parser.add_argument('--job', default=None,
+                        help='Only runs produced by this CI job (for runs '
+                             'recorded before the branch was)')
+    parser.add_argument('--baseline-branch', default=None,
+                        help='Like --baseline-run but uses the latest run of '
+                             'that branch: what the report shows is then how '
+                             'much the selected runs improve on it')
+    parser.add_argument('--baseline-job', default=None,
+                        help='Like --baseline-branch, by CI job')
     parser.add_argument('--default-tol-pct', type=float, default=5.0,
                         help='Tolerance band (%%) for metrics with a '
                              'reference but no declared tolerance '
@@ -2191,27 +2209,36 @@ def main() -> int:
 
     rows = query_results(conn, run=args.run, platform=args.platform,
                          test=args.test, target=args.target,
-                         exclude_platform=exclude_platform)
+                         exclude_platform=exclude_platform,
+                         branch=args.branch, job=args.job)
 
     # A/B accuracy baseline: an earlier run to measure improvement against.
     # Independent of --ref-*: the references stay the declared ground truth;
     # this only supplies the "before" values.
     improvement_rows = None
     improvement_label = ''
-    if args.baseline_run is not None or args.baseline_platform is not None:
+    if (args.baseline_run is not None or args.baseline_platform is not None
+            or args.baseline_branch is not None
+            or args.baseline_job is not None):
         improvement_rows = query_results(
             conn, run=args.baseline_run, platform=args.baseline_platform,
-            test=args.test, target=args.target)
-        improvement_label = (f'run {args.baseline_run}'
-                             if args.baseline_run is not None
-                             else f'latest {args.baseline_platform}')
+            test=args.test, target=args.target,
+            branch=args.baseline_branch, job=args.baseline_job)
+        improvement_label = (
+            f'run {args.baseline_run}' if args.baseline_run is not None
+            else f'latest {args.baseline_platform}'
+            if args.baseline_platform is not None
+            else f'latest {args.baseline_branch}'
+            if args.baseline_branch is not None
+            else f'latest {args.baseline_job}')
 
     history = None
     if not args.no_history and args.run is None:
         history = build_history(
             query_history(conn, platform=args.platform, test=args.test,
                           target=args.target,
-                          exclude_platform=exclude_platform),
+                          exclude_platform=exclude_platform,
+                          branch=args.branch, job=args.job),
             baseline=baseline, default_tol_pct=args.default_tol_pct)
     conn.close()
 

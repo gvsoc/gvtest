@@ -121,6 +121,83 @@ class TestDbMigration:
 
 
 # ---------------------------------------------------------------------------
+# Selecting the runs a report is about: branch, CI job
+# ---------------------------------------------------------------------------
+
+class TestRunSelection:
+
+    def _db(self, tmp_path):
+        """Two runs on main and one on a branch, interleaved in time."""
+        db = str(tmp_path / 'bench.sqlite')
+        conn = init_db(db)
+        rows = (('main', 'sdk', 110), ('my-work', 'sdk-branch', 102),
+                ('main', 'sdk', 112))
+        for i, (branch, job, value) in enumerate(rows):
+            build = conn.execute(
+                'INSERT INTO builds (job, build_number, timestamp) '
+                'VALUES (?, ?, ?)', (job, i, f'2026-07-{16 + i}')).lastrowid
+            run = conn.execute(
+                'INSERT INTO runs (timestamp, git_commit, git_branch, '
+                'platform, build_id) VALUES (?, ?, ?, ?, ?)',
+                (f'2026-07-{16 + i}T10:00:00+00:00', f'c{i}', branch,
+                 'gvsoc', build)).lastrowid
+            conn.execute(
+                'INSERT INTO results (run_id, test, target, metric, value, '
+                'reference, ref_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (run, 't:a', 'tgt', 'm', value, 100, 'rtl'))
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_latest_result_per_selection(self, tmp_path):
+        conn = sqlite3.connect(self._db(tmp_path))
+        key = ('t:a', 'tgt', 'm')
+        # Without a filter the branch run can be the latest one seen
+        assert calibration.query_results(conn)[key]['value'] == 112
+        assert calibration.query_results(
+            conn, branch='my-work')[key]['value'] == 102
+        assert calibration.query_results(
+            conn, branch='main')[key]['value'] == 112
+        # Runs recorded before branches were say 'HEAD': select by CI job
+        assert calibration.query_results(
+            conn, job='sdk-branch')[key]['value'] == 102
+        conn.close()
+
+    def test_history_of_one_branch_only(self, tmp_path):
+        conn = sqlite3.connect(self._db(tmp_path))
+        hist = calibration.build_history(
+            calibration.query_history(conn, branch='main'))
+        points = hist['metrics'][('t:a', 'tgt', 'm')]
+        assert [p['value'] for p in points] == [110, 112]   # no branch run
+        assert len(calibration.build_history(
+            calibration.query_history(conn))['runs']) == 3
+        conn.close()
+
+
+class TestBranchRecording:
+
+    def test_env_branch_used_when_git_is_detached(self, monkeypatch):
+        from gvtest.runner import Runner
+        r = Runner(properties=[], flags=[])
+        monkeypatch.setattr(r, '_get_git_info', lambda *a: 'HEAD')
+        for var in ('GVTEST_BENCH_BRANCH', 'GIT_BRANCH', 'BRANCH_NAME',
+                    'CI_COMMIT_REF_NAME'):
+            monkeypatch.delenv(var, raising=False)
+        assert r._git_branch() == 'HEAD'
+        monkeypatch.setenv('GIT_BRANCH', 'origin/my-work')
+        assert r._git_branch() == 'my-work'      # remote prefix dropped
+        monkeypatch.setenv('GVTEST_BENCH_BRANCH', 'chosen')
+        assert r._git_branch() == 'chosen'
+
+    def test_git_branch_wins_when_checked_out(self, monkeypatch):
+        from gvtest.runner import Runner
+        r = Runner(properties=[], flags=[])
+        monkeypatch.setattr(r, '_get_git_info', lambda *a: 'local-branch')
+        monkeypatch.setenv('GIT_BRANCH', 'origin/other')
+        assert r._git_branch() == 'local-branch'
+
+
+# ---------------------------------------------------------------------------
 # Renaming recorded results after a testset rename
 # ---------------------------------------------------------------------------
 

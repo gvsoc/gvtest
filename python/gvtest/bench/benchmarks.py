@@ -27,12 +27,12 @@ each with the direction that counts as an improvement, and shows the
 latest value, its change against the previous run and against a baseline,
 and its history.
 
-Every level carries a performance index: 100 at its first run, multiplied
-at each run by how much the level moved since the run before. Chaining the
-moves rather than comparing straight back to the first run keeps a
-benchmark that is added or retired from moving the index on its own, and a
-level weighs its immediate children equally, so a test is worth the same
-whether it declares one metric or six.
+Every level carries a performance index against the base the testsets
+declare, `add_bench(..., ref=)`: 100 is the figure a benchmark was blessed
+at, so the index means the same thing in every view and on every database.
+A level weighs its immediate children equally, so a test is worth the same
+whether it declares one metric or six, and a benchmark whose testset
+declares no base does not take part.
 
 Usage:
     python -m gvtest.bench.benchmarks --db bench.sqlite --output bench.html
@@ -219,73 +219,81 @@ def _geomean_ratio(ratios: list[float]) -> float | None:
     return math.exp(statistics.fmean(math.log(r) for r in usable))
 
 
-def _cell_steps(cell: dict[str, Any]) -> tuple[set[int], dict[int, float]]:
-    """A benchmark's speed ratio against its own previous point, per run.
+def _cell_base(cell: dict[str, Any]) -> float | None:
+    """The base a testset declares for a benchmark, `add_bench(ref=...)`.
 
-    The step spans the previous point rather than the previous run, so a run
-    a benchmark sat out does not fabricate a jump; above 1 is faster,
-    whichever direction the metric improves in.
+    The latest declared one is used for the whole history, so the curve
+    keeps its shape when a base is re-blessed instead of history rewriting
+    itself back to 100.
     """
-    runs = set()
-    steps: dict[int, float] = {}
-    points = cell['spark']
-    for i, (value, _, run_id) in enumerate(points):
-        if value is None:
-            continue
-        runs.add(run_id)
-        prev = points[i - 1][0] if i else None
-        if prev and value:
-            steps[run_id] = (prev / value if cell['better'] == 'lower'
-                             else value / prev)
-    return runs, steps
+    if cell.get('ref') is not None:
+        return cell['ref']
+    for _value, ref, _run_id in reversed(cell.get('value_history') or []):
+        if ref is not None:
+            return ref
+    return None
 
 
-def _steps_of(node: dict[str, Any]) -> tuple[set[int], dict[int, float]]:
-    """The runs a level has data for, and its speed ratio per run.
+def _cell_ratios(cell: dict[str, Any]) -> dict[int, float]:
+    """How fast a benchmark ran against its declared base, per run.
+
+    Above 1 is faster than the base, whichever direction the metric
+    improves in. Empty when the testset declares no base for it.
+    """
+    base = _cell_base(cell)
+    if not base:
+        return {}
+    ratios = {}
+    for value, _ref, run_id in cell.get('value_history') or []:
+        if value:
+            ratios[run_id] = (base / value if cell['better'] == 'lower'
+                              else value / base)
+    return ratios
+
+
+def _ratios_of(node: dict[str, Any]) -> dict[int, float]:
+    """A level against its base, per run.
 
     Every immediate child counts once — a sub-level as much as a benchmark
     sitting directly in the level — so a test declaring six metrics does not
     outvote one declaring a single metric, and three views of the same
     measurement (cycles, active cycles, instructions) weigh as one test.
     """
-    children = [_steps_of(child) for child in node['children'].values()]
-    children += [_cell_steps(row['cells'][0]) for row in node['rows']
+    children = [_ratios_of(child) for child in node['children'].values()]
+    children += [_cell_ratios(row['cells'][0]) for row in node['rows']
                  if row['cells'][0] is not None]
-    runs: set[int] = set()
     per_run: dict[int, list[float]] = defaultdict(list)
-    for child_runs, child_steps in children:
-        runs |= child_runs
-        for run_id, ratio in child_steps.items():
+    for child in children:
+        for run_id, ratio in child.items():
             per_run[run_id].append(ratio)
-    steps = {run_id: ratio for run_id, ratio in
-             ((r, _geomean_ratio(v)) for r, v in per_run.items())
-             if ratio is not None}
-    return runs, steps
+    return {run_id: ratio for run_id, ratio in
+            ((r, _geomean_ratio(v)) for r, v in per_run.items())
+            if ratio is not None}
 
 
 def _index_series(node: dict[str, Any],
                   run_order: list[int]) -> list[list[Any]]:
-    """A level's performance index over the runs: 100 at its first run.
+    """A level's performance index over the runs.
 
-    Chained, so each run multiplies the index by how much the level moved
-    since the run before. Adding or retiring a benchmark therefore cannot
-    move the index on its own: a benchmark only weighs in once it has a run
-    to be compared against.
+    100 is the base the testsets declare, so the number means the same
+    thing in every view and on every database: 112 is a level running 12%
+    faster than the figures its benchmarks were blessed at. A benchmark
+    with no declared base does not take part.
     """
-    runs, steps = _steps_of(node)
+    ratios = _ratios_of(node)
     points: list[list[Any]] = []
-    index: float | None = None
     for run_id in run_order:
-        if run_id not in runs:
+        ratio = ratios.get(run_id)
+        if ratio is None:
             continue
-        if index is None:
-            index, sev = 100.0, None
-        else:
-            step = steps.get(run_id, 1.0)
-            index *= step
-            sev = _verdict((step - 1) * 100)
-        points.append([round(index, 3), sev, run_id])
+        index = ratio * 100
+        points.append([round(index, 3), _verdict(index - 100), run_id])
     return points
+
+
+def _n_based(cells: list[dict[str, Any]]) -> int:
+    """How many of those benchmarks their testset declares a base for."""
+    return sum(1 for c in cells if _cell_base(c))
 
 
 def _root_node(clusters: list[dict[str, Any]]) -> dict[str, Any]:
@@ -310,7 +318,7 @@ def _index_cell(points: list[list[Any]], grp: bool = True) -> str:
     sev = _verdict(gain)
     word = ('faster' if sev == 'ok' else 'slower' if sev == 'bad'
             else 'about as fast')
-    title = (f'{word} than at the first run of this level: index {index:.1f}, '
+    title = (f'{word} than the base its testsets declare: index {index:.1f}, '
              f'{"+" if gain >= 0 else ""}{gain:.1f}%')
     sev_cls = f' err {sev}' if sev in ('ok', 'bad') else ''
     return (f'<td class="{cls}{sev_cls}" title="{_esc(title)}">'
@@ -457,8 +465,12 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
     meta = (f"{cluster['n_tests']} test(s) · {stats['n_total']} benchmark(s)"
             f" · {stats['n_faster']} faster, {stats['n_slower']} slower "
             f"than the run before")
+    based = _n_based(_tree_cells(tree))
     if index:
         meta += f' · index {index[-1][0]:.1f}'
+    if based < stats['n_total']:
+        meta += (f" · {stats['n_total'] - based} without a declared base"
+                 if based else ' · no declared base')
     out = [f'<section id="sec-{_esc(target)}" '
            f'data-targets="{_esc(target)}"><div class="sec-head">'
            f'<h2>{_esc(target)}</h2>'
@@ -485,6 +497,10 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
             if name.startswith(node['prefix']):
                 name = name[len(node['prefix']):]
             meta += f' · worst: {name}'
+        based = _n_based(cells)
+        if based < stats['n_total']:
+            meta += (f" · {stats['n_total'] - based} without a declared base"
+                     if based else ' · no declared base')
         points = _index_series(node, run_order)
         out.append(f'<tr class="grow" data-gid="{gid}" '
                    f'data-key="{_esc(key)}" data-anc="{anc}">'
@@ -579,11 +595,12 @@ def render_html(model: dict[str, Any], title: str) -> str:
 <p class="sub">How the applications perform over the runs. A benchmark is a
 metric a testset declares with <code>kind='benchmark'</code>, each with the
 direction that counts as an improvement; a change is called faster or slower
-beyond ±{NOISE_PCT:g}%. Every level carries a performance index, 100 at its
-first run and multiplied by how much it moved at each run since: 112 means a
-level is 12% faster than it started. A level weighs its immediate children
-equally — a sub-level as much as a benchmark of its own — so a test is worth
-the same whether it declares one metric or six.</p>
+beyond ±{NOISE_PCT:g}%. Every level carries a performance index against the
+base its benchmarks declare (<code>add_bench(..., ref=)</code>): 100 is the
+figure they were blessed at, 112 a level running 12% faster than that. A
+level weighs its immediate children equally — a sub-level as much as a
+benchmark of its own — so a test is worth the same whether it declares one
+metric or six, and a benchmark with no declared base does not take part.</p>
 <p class="runs">{_esc(runs_txt)}</p>
 {hist}
 <div class="legend">
@@ -593,7 +610,7 @@ the same whether it declares one metric or six.</p>
 </div>
 <div class="strip">
   <div class="stat"><div class="v">{index_txt}</div>
-    <div class="k">performance index (100 at the first run)</div></div>
+    <div class="k">performance index (100 = the declared base)</div></div>
   <div class="stat"><div class="v">{g['n_total']}</div>
     <div class="k">benchmarks</div></div>
   <div class="stat"><div class="v">{_fmt_gain(g['gain_prev_pct'])}</div>

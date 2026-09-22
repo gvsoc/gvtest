@@ -1239,9 +1239,13 @@ class TestBenchmarkReport:
         for i, (cycles, bw) in enumerate(((1000, 50.0), (990, 50.5),
                                           (900, 55.0))):
             results = [
-                {**_result('app:fir', 'gap9', 'fir.cycles', cycles),
+                # blessed at the values of the first run: ref is the base the
+                # performance index is measured against
+                {**_result('app:fir', 'gap9', 'fir.cycles', cycles,
+                           ref=1000, src='measured'),
                  'kind': 'benchmark', 'better': 'lower'},
-                {**_result('app:fir', 'gap9', 'fir.bw', bw),
+                {**_result('app:fir', 'gap9', 'fir.bw', bw,
+                           ref=50.0, src='measured'),
                  'kind': 'benchmark', 'better': 'higher'},
                 _result('el:dma', 'gap9', 'dma.cycles', 140, ref=143,
                         src='rtl')]
@@ -1294,13 +1298,13 @@ class TestBenchmarkReport:
         assert '<th class="grp">Value</th>' in html_str
         assert 'vs baseline' in html_str and 'baseline: run 1' in html_str
         assert '>900<' in html_str and '>55<' in html_str
-        # a level's index: 100 at its first run, chained from there
+        # a level's index: 100 is the base the testset declares
         run_order = [r['run_id'] for r in model['history']['runs']]
         index = benchmarks._index_series(
             benchmarks._root_node(model['clusters']), run_order)
-        # run 2 is 1% faster than run 1 (990/1000, 50.5/50), run 3 9.5% more
+        # blessed at 1000 cycles / 50 B per cycle, so run 1 sits at 100
         assert [round(p[0], 1) for p in index] == [100.0, 101.0, 110.6]
-        assert [p[1] for p in index] == [None, 'warn', 'ok']
+        assert [p[1] for p in index] == ['warn', 'warn', 'ok']
         # and it is the number the level rows show
         assert '>110.6<' in html_str
         # the calibration-only metric is not in the page
@@ -1319,7 +1323,8 @@ class TestBenchmarkReport:
         """A test declaring three metrics does not outvote one declaring a
         single metric: under 'app', 'big' and 'small' weigh the same."""
         def bench(test, metric, value):
-            return {**_result(test, 'gap9', metric, value),
+            return {**_result(test, 'gap9', metric, value, ref=100,
+                              src='measured'),
                     'kind': 'benchmark', 'better': 'lower'}
         runs = []
         for i, (big, small) in enumerate(((100, 100), (90, 100))):
@@ -1333,19 +1338,34 @@ class TestBenchmarkReport:
         # (1.111, 1.111, 1.111, 1.0) = 1.082
         assert [round(p[0], 1) for p in index] == [100.0, 105.4]
 
-    def test_a_new_benchmark_does_not_move_the_index(self, tmp_path):
-        """Chaining: a benchmark only weighs in once it has a run to be
-        compared against, whatever the scale of its values."""
-        def bench(metric, value):
-            return {**_result('app:fir', 'gap9', metric, value),
+    def test_a_benchmark_without_a_base_is_left_out(self, tmp_path):
+        """Only what a testset blessed takes part: 'b' has no ref, so the
+        index follows 'a' alone whatever 'b' does."""
+        def bench(metric, value, ref=None):
+            return {**_result('app:fir', 'gap9', metric, value, ref=ref,
+                              src='measured' if ref else None),
                     'kind': 'benchmark', 'better': 'lower'}
-        runs = [_run([bench('a', 100)], timestamp='2026-07-16T10:00:00+00:00'),
-                # 'b' appears here, ten times bigger, and 'a' is 10% faster
-                _run([bench('a', 90), bench('b', 1000)],
-                     timestamp='2026-07-17T10:00:00+00:00'),
-                _run([bench('a', 90), bench('b', 500)],
-                     timestamp='2026-07-18T10:00:00+00:00')]
+        runs = [_run([bench('a', 100, ref=100), bench('b', 1000)],
+                     timestamp='2026-07-16T10:00:00+00:00'),
+                _run([bench('a', 90, ref=100), bench('b', 100)],
+                     timestamp='2026-07-17T10:00:00+00:00')]
         index = self._index(tmp_path, runs)
-        # run 2 is 'a' alone (+11.1%); only at run 3 does 'b' count, and then
-        # the level is geomean(1.0, 2.0) faster
-        assert [round(p[0], 1) for p in index] == [100.0, 111.1, 157.1]
+        # 'b' running ten times faster does not show: 100/90 for 'a' alone
+        assert [round(p[0], 1) for p in index] == [100.0, 111.1]
+
+    def test_the_index_does_not_depend_on_the_runs_in_the_view(self, tmp_path):
+        """Measuring against the declared base, not against the first run
+        recorded, so the latest index is the same however far back the
+        history goes."""
+        def bench(value):
+            return {**_result('app:fir', 'gap9', 'cycles', value, ref=100,
+                              src='measured'),
+                    'kind': 'benchmark', 'better': 'lower'}
+        long_run = [_run([bench(v)], timestamp=f'2026-07-{16 + i}T10:00:00Z')
+                    for i, v in enumerate((200, 150, 80))]
+        assert round(self._index(tmp_path, long_run)[-1][0], 1) == 125.0
+        # the same last run on its own reads the same
+        short = [_run([bench(80)], timestamp='2026-07-18T10:00:00Z')]
+        alone = tmp_path / 'alone'
+        alone.mkdir()
+        assert round(self._index(alone, short)[-1][0], 1) == 125.0

@@ -445,7 +445,7 @@ class TestCalibrationTree:
         """[(gid, key, ancestors, label, meta, 'avg x%', 'max y%')]"""
         out = []
         for gid, key, anc, label, meta, cell in re.findall(
-                r'<tr class="grow" data-gid="(\d+)" data-key="([^"]*)" '
+                r'<tr class="grow" data-gid="([\d.]+)" data-key="([^"]*)" '
                 r'data-anc="([^"]*)">.*?<button[^>]*>([^<]*)</button>'
                 r'<span class="gmeta">([^<]*)</span></td>'
                 r'<td class="num grp stack">(.*?)</td>', html_str):
@@ -479,7 +479,8 @@ class TestCalibrationTree:
                          r'style="padding-left:[0-9]+px"><details class="mdoc">'
                          r'<summary><span class="mname" '
                          r'title="a.b.x">x</span>'
-                         % (root[0], top[0], groups['b'][0]), html_str)
+                         % tuple(re.escape(g) for g in
+                                 (root[0], top[0], groups['b'][0])), html_str)
         assert 'class="tree-all" data-open="1"' in html_str
 
     def test_level_history_is_mean_then_max(self, tmp_path):

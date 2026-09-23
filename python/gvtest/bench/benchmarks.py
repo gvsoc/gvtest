@@ -476,7 +476,8 @@ _BENCH_JS = r"""
 
 
 def _render_cluster(cluster: dict[str, Any], run_order: list[int],
-                    with_baseline: bool, baseline_label: str = '') -> str:
+                    with_baseline: bool, baseline_label: str = '',
+                    sec: int = 0) -> str:
     """One target's tree: levels, then their benchmarks."""
     target = cluster['targets'][0]
     stats = cluster['stats']
@@ -504,7 +505,9 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
            + '<th class="txt grp">History · trend</th>'
            '</tr></thead><tbody>']
     n_rest = 1 if with_baseline else 0
-    group_ids = iter(range(1, 1 << 30))
+    # Level ids carry their section, so two targets holding the same
+    # tests keep their own open/closed state.
+    group_ids = iter(f'{sec}.{n}' for n in range(1, 1 << 30))
 
     def group_row(node: dict[str, Any], key: str, gid: int, anc: str,
                   depth: int) -> None:
@@ -579,8 +582,9 @@ def render_html(model: dict[str, Any], title: str) -> str:
                   (r['timestamp'] or '')[:16]] for r in runs]
     with_baseline = bool(model['baseline_label'])
     sections = ''.join(
-        _render_cluster(c, run_order, with_baseline, model['baseline_label'])
-        for c in model['clusters'])
+        _render_cluster(c, run_order, with_baseline,
+                        model['baseline_label'], sec)
+        for sec, c in enumerate(model['clusters']))
     root = _root_node(model['clusters'])
     index = _index_series(root, run_order)
     # The headline figures are the root of the tree, so they agree with the

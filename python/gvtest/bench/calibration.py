@@ -934,7 +934,8 @@ def _history_cell(cell: dict[str, Any] | None) -> str:
 
 def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
                     default_tol_pct: float = 5.0,
-                    run_order: list[int] | None = None) -> str:
+                    run_order: list[int] | None = None,
+                    sec: int = 0) -> str:
     targets = cluster['targets']
     stats = cluster['stats']
     # Only annotate_trends() sets delta_history (i.e. when history was built).
@@ -1000,7 +1001,9 @@ def _render_cluster(cluster: dict[str, Any], show_improve: bool = False,
     # Columns after the Δ (group) column(s) that a level row leaves blank.
     n_rest = (1 if show_improve else 0) + (8 if spread else 4)
     target = ' '.join(targets)
-    group_ids = iter(range(1, 1 << 30))
+    # Level ids carry their section, so two targets holding the same
+    # tests keep their own open/closed state.
+    group_ids = iter(f'{sec}.{n}' for n in range(1, 1 << 30))
 
     def group_row(node: dict[str, Any], key: str, gid: int, anc: str,
                   depth: int) -> None:
@@ -2061,8 +2064,8 @@ def render_html(model: dict[str, Any], title: str,
     run_order = [r[0] for r in runs_axis]
     sections = ''.join(_render_cluster(c, show_improve=improvement is not None,
                                        default_tol_pct=default_tol_pct,
-                                       run_order=run_order)
-                       for c in model['clusters'])
+                                       run_order=run_order, sec=sec)
+                       for sec, c in enumerate(model['clusters']))
     runs_json = json.dumps(runs_axis, separators=(',', ':')).replace('</', '<\\/')
 
     client_json = json.dumps(_client_data(model)).replace('</', '<\\/')

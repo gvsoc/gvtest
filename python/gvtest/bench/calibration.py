@@ -531,9 +531,6 @@ td.stack .sp + .sp, td.stack .lv + .lv { margin-top:3px; }
 td.dh .band { fill:var(--ok-bg); }
 td.dh .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 2; }
 td.dh .line { fill:none; stroke:var(--ink-2); stroke-width:1.5; }
-/* The second branch of a merged view, so the two lines stay apart. */
-td.dh .line.alt { stroke:var(--ink-3, #9aa0a6); stroke-width:1.2;
-  stroke-dasharray:3 2; opacity:.85; }
 td.dh .pt { fill:transparent; }
 td.dh .pt:hover { fill:var(--ink-2); }
 td.dh .last.ok { fill:var(--ok); } td.dh .last.warn { fill:var(--warn); }
@@ -1283,13 +1280,7 @@ _AXIS_JS = r"""
         var r = info[id];
         return r && r[3] ? r[3] : '';
       },
-      branches: function () {
-        var seen = [], i;
-        for (i = 0; i < runs.length; i++) {
-          if (runs[i][3] && seen.indexOf(runs[i][3]) < 0) seen.push(runs[i][3]);
-        }
-        return seen;
-      },
+
       date: function (id) {
         var r = info[id];
         return r ? r[2].slice(0, 10) : '';
@@ -1387,23 +1378,13 @@ _HIST_JS = r"""
         '" height="' + Math.max(0, y(-tol) - y(tol)).toFixed(1) + '"/>' +
         '<line class="zero" x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) +
         '" y2="' + y(0).toFixed(1) + '"/>';
-    // One line per branch: with two branches on the axis a single line
-    // would zig-zag between them and read as noise.
-    var order = AXIS.branches();
-    var byBranch = {};
-    pts.forEach(function (p) {
-      var b = AXIS.branch(p[2]);
-      (byBranch[b] = byBranch[b] || []).push(p);
-    });
-    Object.keys(byBranch).forEach(function (b) {
-      var line = byBranch[b];
-      if (line.length < 2) return;
-      var rank = order.indexOf(b);
-      s += '<polyline class="line' + (rank > 0 ? ' alt' : '') +
-          '" points="' + line.map(function (p) {
-            return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
-          }).join(' ') + '"/>';
-    });
+    // One line over every run on the axis, whatever branch each came from:
+    // the merged view is there to read as a single history.
+    if (pts.length > 1) {
+      s += '<polyline class="line" points="' + pts.map(function (p) {
+        return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
+      }).join(' ') + '"/>';
+    }
     pts.forEach(function (p, i) {
       var last = i === pts.length - 1;
       s += '<circle class="' + (last ? 'last ' + esc(p[1] || '') : 'pt') +

@@ -1405,6 +1405,34 @@ class TestBenchmarkReport:
         assert round(by_metric['cycles']['gain_base_pct'], 1) == 20.0
         assert round(by_metric['bw']['gain_base_pct'], 1) == 20.0
 
+    def test_the_bases_are_compared_too(self, tmp_path):
+        """Values say where the chips stand today, bases where they stood
+        when each was blessed, so the pair says whether the gap moved."""
+        from gvtest.bench import benchmarks
+
+        def bench(target, value, ref):
+            return {**_result('app:fir', target, 'cycles', value, ref=ref,
+                              src='measured'),
+                    'kind': 'benchmark', 'better': 'lower'}
+        # blessed level, but chip_a has since pulled 20% ahead
+        db = _make_db(tmp_path, [_run([bench('chip_a', 80, 100),
+                                       bench('chip_b', 100, 100)])])
+        conn = sqlite3.connect(db)
+        model = benchmarks.report(conn, target='chip_a', vs_target='chip_b')
+        conn.close()
+        cell = model['cells'][0]
+        assert round(cell['gain_base_pct'], 1) == 20.0   # today
+        assert cell['baseline_ref'] == 100
+        assert round(cell['gain_ref_pct'], 1) == 0.0     # when blessed
+        html_str = benchmarks.render_html(model, 'Benchmarks')
+        assert '<th>base vs chip_b</th>' in html_str
+
+    def test_the_bases_are_only_compared_across_targets(self, tmp_path):
+        from gvtest.bench import benchmarks
+        model = self._model(tmp_path, baseline_run=1)
+        assert all(c['gain_ref_pct'] is None for c in model['cells'])
+        assert 'base vs' not in benchmarks.render_html(model, 'Benchmarks')
+
     def test_the_other_target_names_the_comparison_column(self, tmp_path):
         from gvtest.bench import benchmarks
         conn = sqlite3.connect(self._two_targets(tmp_path))

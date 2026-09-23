@@ -146,6 +146,14 @@ def build_model(rows: dict[tuple[str, str, str], dict[str, Any]],
             _change_pct(cell['value'], base['value'] if base else None),
             cell['better'])
         cell['baseline'] = base['value'] if base else None
+        # Comparing targets, the bases are worth comparing too: the values
+        # say where the two chips stand today, the bases where they stood
+        # when each was blessed, so the pair says whether the gap moved.
+        cell['baseline_ref'] = base['ref'] if base else None
+        cell['gain_ref_pct'] = _gain_pct(
+            _change_pct(_cell_base(cell),
+                        cell['baseline_ref'] if cross_target else None),
+            cell['better']) if cross_target else None
         # The sparkline plots the values, each point coloured like the
         # "vs previous" column: faster, about the same, or slower.
         spark = []
@@ -477,7 +485,7 @@ _BENCH_JS = r"""
 
 def _render_cluster(cluster: dict[str, Any], run_order: list[int],
                     with_baseline: bool, baseline_label: str = '',
-                    sec: int = 0) -> str:
+                    sec: int = 0, with_ref_cmp: bool = False) -> str:
     """One target's tree: levels, then their benchmarks."""
     target = cluster['targets'][0]
     stats = cluster['stats']
@@ -501,6 +509,8 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
            f'<th class="grp">Value</th>'
            f'<th class="grp">vs previous</th>'
            + (f'<th>vs {_esc(baseline_label)}</th>' if with_baseline
+              else '')
+           + (f'<th>base vs {_esc(baseline_label)}</th>' if with_ref_cmp
               else '')
            + '<th class="txt grp">History · trend</th>'
            '</tr></thead><tbody>']
@@ -536,6 +546,8 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
                    f'{_pct_cell(_level_gain(node, "gain_prev_pct"), grp=True)}')
         if with_baseline:
             out.append(_pct_cell(_level_gain(node, 'gain_base_pct')))
+        if with_ref_cmp:
+            out.append(_pct_cell(_level_gain(node, 'gain_ref_pct')))
         # The level's index over the runs, so the shape of the number above
         out.append(f'<td class="dh grp">{_spark(points, "higher")}</td>'
                    f'</tr>')
@@ -549,6 +561,8 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
                    f'{_pct_cell(cell["gain_prev_pct"], grp=True)}')
         if with_baseline:
             out.append(_pct_cell(cell['gain_base_pct']))
+        if with_ref_cmp:
+            out.append(_pct_cell(cell['gain_ref_pct']))
         out.append(f'<td class="dh grp">'
                    f'{_spark(cell["spark"], cell["better"])}</td></tr>')
 
@@ -583,7 +597,8 @@ def render_html(model: dict[str, Any], title: str) -> str:
     with_baseline = bool(model['baseline_label'])
     sections = ''.join(
         _render_cluster(c, run_order, with_baseline,
-                        model['baseline_label'], sec)
+                        model['baseline_label'], sec,
+                        with_ref_cmp=model.get('cross_target', False))
         for sec, c in enumerate(model['clusters']))
     root = _root_node(model['clusters'])
     index = _index_series(root, run_order)

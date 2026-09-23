@@ -87,7 +87,8 @@ def build_value_history(series: dict[tuple[str, str, str],
                            'ref': e['ref']})
             runs.setdefault(e['run_id'], {
                 'run_id': e['run_id'], 'timestamp': e['timestamp'],
-                'git_commit': e['git_commit'], 'platform': e['platform']})
+                'git_commit': e['git_commit'], 'platform': e['platform'],
+                'branch': e.get('branch')})
         if points:
             metrics[key] = points
     return {'runs': sorted(runs.values(),
@@ -593,7 +594,8 @@ def render_html(model: dict[str, Any], title: str) -> str:
     runs = model['history'].get('runs', [])
     run_order = [r['run_id'] for r in runs]
     runs_axis = [[r['run_id'], (r['git_commit'] or '')[:8],
-                  (r['timestamp'] or '')[:16]] for r in runs]
+                  (r['timestamp'] or '')[:16], r.get('branch') or '']
+                 for r in runs]
     with_baseline = bool(model['baseline_label'])
     sections = ''.join(
         _render_cluster(c, run_order, with_baseline,

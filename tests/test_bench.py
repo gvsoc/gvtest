@@ -898,6 +898,37 @@ class TestCalibrationHistory:
         assert 'Calibration over time' not in calibration.render_html(
             model, 'hist', history={'runs': hist['runs'][:1], 'metrics': {}})
 
+    def test_two_branches_share_one_timeline(self, tmp_path):
+        """Merging a branch with the line it came from: the runs of both sit
+        on one axis, ordered by time, each naming its branch."""
+        runs = []
+        for i, (branch, value) in enumerate((('main', 100), ('main', 102),
+                                             ('topic', 90), ('main', 101))):
+            run = _run([_result('t', 'gap9', 'm', value, ref=100)],
+                       timestamp=f'2026-07-{16 + i}T10:00:00+00:00')
+            run['git_branch'] = branch
+            runs.append(run)
+        conn = sqlite3.connect(_make_db(tmp_path, runs))
+        both = 'main,topic'
+        rows = calibration.query_results(conn, branch=both)
+        hist = calibration.build_history(calibration.query_history(
+            conn, branch=both))
+        conn.close()
+        assert [(r['run_id'], r['branch']) for r in hist['runs']] == [
+            (1, 'main'), (2, 'main'), (3, 'topic'), (4, 'main')]
+        # one branch alone still selects only its own runs
+        one = tmp_path / 'one'
+        one.mkdir()
+        conn = sqlite3.connect(_make_db(one, runs))
+        only = calibration.build_history(calibration.query_history(
+            conn, branch='topic'))
+        conn.close()
+        assert [r['branch'] for r in only['runs']] == ['topic']
+        model = calibration.build_model(rows)
+        calibration.annotate_trends(model, hist)
+        html_str = calibration.render_html(model, 'merged', history=hist)
+        assert '"main"' in html_str and '"topic"' in html_str
+
     def test_delta_history_per_row(self, tmp_path):
         db = self._db(tmp_path, [100, 104, 130])
         conn = sqlite3.connect(db)
@@ -914,10 +945,12 @@ class TestCalibrationHistory:
 
         html_str = calibration.render_html(model, 'hist', history=hist)
         assert '<th class="txt">Δ history · trend</th>' in html_str
+        # each run also names its branch, so a merged view can draw one
+        # line per branch
         assert ('<script type="application/json" id="calib-runs">'
-                '[[1,"commit0","2026-07-16T10:00"],'
-                '[2,"commit1","2026-07-17T10:00"],'
-                '[3,"commit2","2026-07-18T10:00"]]</script>') in html_str
+                '[[1,"commit0","2026-07-16T10:00","main"],'
+                '[2,"commit1","2026-07-17T10:00","main"],'
+                '[3,"commit2","2026-07-18T10:00","main"]]</script>') in html_str
 
         m = re.search(r'<td class="dh"><div class="sp" data-h="([^"]*)" '
                       r'data-tol="10">', html_str)

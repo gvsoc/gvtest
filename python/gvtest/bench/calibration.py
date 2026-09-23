@@ -63,6 +63,14 @@ GROUND_TRUTH = ('rtl', 'analytical')
 
 # -------------------------------------------------------------------- query
 
+def _branch_list(branch: str | list[str] | None) -> list[str]:
+    """The branches a filter selects, from a list or a comma-separated name."""
+    if branch is None:
+        return []
+    names = branch if isinstance(branch, list) else branch.split(',')
+    return [n.strip() for n in names if n and n.strip()]
+
+
 def _filters(run: int | None = None, platform: str | None = None,
              test: str | None = None, target: str | None = None,
              exclude_platform: str | None = None, branch: str | None = None,
@@ -74,12 +82,18 @@ def _filters(run: int | None = None, platform: str | None = None,
     made on, or the CI job that produced it (a run recorded before branches
     were recorded properly says 'HEAD', so the job is the way to tell a
     main-line run from a branch one).
+
+    branch takes several names, as a list or comma-separated, to follow a
+    branch and the line it came from on one timeline.
     """
     sql, params = '', []
+    branches = _branch_list(branch)
+    if branches:
+        sql += ' AND ru.git_branch IN (%s)' % ','.join('?' * len(branches))
+        params += branches
     for clause, value in ((' AND ru.id = ?', run),
                           (' AND ru.platform = ?', platform),
                           (' AND ru.platform != ?', exclude_platform),
-                          (' AND ru.git_branch = ?', branch),
                           (' AND b.job = ?', job),
                           (' AND r.kind = ?', kind)):
         if value is not None:
@@ -116,7 +130,7 @@ def query_results(
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
                ru.id, ru.timestamp, ru.git_commit, ru.platform,
-               r.value_min, r.value_max, r.kind, r.better
+               r.value_min, r.value_max, r.kind, r.better, ru.git_branch
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
         LEFT JOIN builds b ON ru.build_id = b.id
@@ -150,7 +164,7 @@ def query_history(
         SELECT r.test, r.target, r.metric, r.value, r.description,
                r.reference, r.tolerance, r.ref_type,
                ru.id, ru.timestamp, ru.git_commit, ru.platform,
-               r.value_min, r.value_max, r.kind, r.better
+               r.value_min, r.value_max, r.kind, r.better, ru.git_branch
         FROM results r
         JOIN runs ru ON r.run_id = ru.id
         LEFT JOIN builds b ON ru.build_id = b.id
@@ -167,7 +181,7 @@ def _iter_cells(conn: sqlite3.Connection, query: str, params: list[Any]):
     for row in conn.execute(query, params):
         (test_name, target_name, metric, value, desc,
          ref, tol, ref_type, run_id, timestamp, commit, run_platform,
-         value_min, value_max, kind, better) = row
+         value_min, value_max, kind, better, run_branch) = row
         yield {
             'test': test_name,
             'target': target_name,
@@ -190,6 +204,7 @@ def _iter_cells(conn: sqlite3.Connection, query: str, params: list[Any]):
             'timestamp': timestamp,
             'git_commit': commit,
             'platform': run_platform,
+            'branch': run_branch,
             'kind': kind,
             'better': better or 'lower',
         }
@@ -516,6 +531,9 @@ td.stack .sp + .sp, td.stack .lv + .lv { margin-top:3px; }
 td.dh .band { fill:var(--ok-bg); }
 td.dh .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 2; }
 td.dh .line { fill:none; stroke:var(--ink-2); stroke-width:1.5; }
+/* The second branch of a merged view, so the two lines stay apart. */
+td.dh .line.alt { stroke:var(--ink-3, #9aa0a6); stroke-width:1.2;
+  stroke-dasharray:3 2; opacity:.85; }
 td.dh .pt { fill:transparent; }
 td.dh .pt:hover { fill:var(--ink-2); }
 td.dh .last.ok { fill:var(--ok); } td.dh .last.warn { fill:var(--warn); }
@@ -1257,7 +1275,20 @@ _AXIS_JS = r"""
     return {
       label: function (id) {
         var r = info[id];
-        return r ? r[1] + ' \u00b7 ' + r[2].replace('T', ' ') : String(id);
+        if (!r) return String(id);
+        return r[1] + ' \u00b7 ' + r[2].replace('T', ' ') +
+            (r[3] ? ' \u00b7 ' + r[3] : '');
+      },
+      branch: function (id) {
+        var r = info[id];
+        return r && r[3] ? r[3] : '';
+      },
+      branches: function () {
+        var seen = [], i;
+        for (i = 0; i < runs.length; i++) {
+          if (runs[i][3] && seen.indexOf(runs[i][3]) < 0) seen.push(runs[i][3]);
+        }
+        return seen;
       },
       date: function (id) {
         var r = info[id];
@@ -1356,11 +1387,23 @@ _HIST_JS = r"""
         '" height="' + Math.max(0, y(-tol) - y(tol)).toFixed(1) + '"/>' +
         '<line class="zero" x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) +
         '" y2="' + y(0).toFixed(1) + '"/>';
-    if (pts.length > 1) {
-      s += '<polyline class="line" points="' + pts.map(function (p) {
-        return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
-      }).join(' ') + '"/>';
-    }
+    // One line per branch: with two branches on the axis a single line
+    // would zig-zag between them and read as noise.
+    var order = AXIS.branches();
+    var byBranch = {};
+    pts.forEach(function (p) {
+      var b = AXIS.branch(p[2]);
+      (byBranch[b] = byBranch[b] || []).push(p);
+    });
+    Object.keys(byBranch).forEach(function (b) {
+      var line = byBranch[b];
+      if (line.length < 2) return;
+      var rank = order.indexOf(b);
+      s += '<polyline class="line' + (rank > 0 ? ' alt' : '') +
+          '" points="' + line.map(function (p) {
+            return x(p).toFixed(1) + ',' + y(p[0]).toFixed(1);
+          }).join(' ') + '"/>';
+    });
     pts.forEach(function (p, i) {
       var last = i === pts.length - 1;
       s += '<circle class="' + (last ? 'last ' + esc(p[1] || '') : 'pt') +
@@ -1611,7 +1654,8 @@ def build_history(
             })
             runs.setdefault(e['run_id'], {
                 'run_id': e['run_id'], 'timestamp': e['timestamp'],
-                'git_commit': e['git_commit'], 'platform': e['platform']})
+                'git_commit': e['git_commit'], 'platform': e['platform'],
+                'branch': e.get('branch')})
         if points:
             metrics[key] = points
 
@@ -2059,7 +2103,7 @@ def render_html(model: dict[str, Any], title: str,
     # Every row is drawn on this one run axis, so a metric measured in
     # only some of the runs still lines up with the others.
     runs_axis = [[r['run_id'], (r['git_commit'] or '')[:8],
-                  (r['timestamp'] or '')[:16]]
+                  (r['timestamp'] or '')[:16], r.get('branch') or '']
                  for r in (history or {}).get('runs', [])]
     run_order = [r[0] for r in runs_axis]
     sections = ''.join(_render_cluster(c, show_improve=improvement is not None,

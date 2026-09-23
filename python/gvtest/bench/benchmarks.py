@@ -38,6 +38,8 @@ Usage:
     python -m gvtest.bench.benchmarks --db bench.sqlite --output bench.html
     python -m gvtest.bench.benchmarks --db bench.sqlite --output b.html \\
         --branch main --baseline-branch release
+    python -m gvtest.bench.benchmarks --db bench.sqlite --output b.html \\
+        --target el.el1.evk --vs-target gap.gap9.evk
 """
 
 from __future__ import annotations
@@ -119,7 +121,8 @@ def _verdict(gain_pct: float | None) -> str | None:
 def build_model(rows: dict[tuple[str, str, str], dict[str, Any]],
                 history: dict[str, Any],
                 baseline: dict[tuple[str, str, str], dict[str, Any]] | None
-                = None, baseline_label: str = '') -> dict[str, Any]:
+                = None, baseline_label: str = '',
+                cross_target: bool = False) -> dict[str, Any]:
     """Assemble the report: one cell per metric, clusters per target.
 
     Each cell carries the latest value, the change against the previous run
@@ -135,7 +138,10 @@ def build_model(rows: dict[tuple[str, str, str], dict[str, Any]],
         prev = points[-2]['value'] if len(points) >= 2 else None
         cell['gain_prev_pct'] = _gain_pct(
             _change_pct(cell['value'], prev), cell['better'])
-        base = (baseline or {}).get(key)
+        # Against another target the same benchmark carries a different
+        # target in its key, so it is matched on test and metric alone.
+        base = (baseline or {}).get(
+            (cell['test'], cell['metric']) if cross_target else key)
         cell['gain_base_pct'] = _gain_pct(
             _change_pct(cell['value'], base['value'] if base else None),
             cell['better'])
@@ -177,6 +183,7 @@ def build_model(rows: dict[tuple[str, str, str], dict[str, Any]],
         'runs': sorted({(c['run_id'], c['platform'], c['timestamp'],
                          c['git_commit']) for c in cells}),
         'baseline_label': baseline_label,
+        'cross_target': cross_target,
         'history': history,
     }
 
@@ -289,6 +296,19 @@ def _index_series(node: dict[str, Any],
         index = ratio * 100
         points.append([round(index, 3), _verdict(index - 100), run_id])
     return points
+
+
+def _level_gain(node: dict[str, Any], key: str) -> float | None:
+    """One of a cell's gains, carried up the tree.
+
+    Weighs the immediate children equally, like the index, so the number on
+    a level row is the combination of the rows indented under it rather
+    than of however many metrics happen to sit at the bottom.
+    """
+    parts = [_level_gain(child, key) for child in node['children'].values()]
+    parts += [row['cells'][0].get(key) for row in node['rows']
+              if row['cells'][0] is not None]
+    return _geomean_gain([p for p in parts if p is not None])
 
 
 def _n_based(cells: list[dict[str, Any]]) -> int:
@@ -456,7 +476,7 @@ _BENCH_JS = r"""
 
 
 def _render_cluster(cluster: dict[str, Any], run_order: list[int],
-                    with_baseline: bool) -> str:
+                    with_baseline: bool, baseline_label: str = '') -> str:
     """One target's tree: levels, then their benchmarks."""
     target = cluster['targets'][0]
     stats = cluster['stats']
@@ -479,7 +499,8 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
            f'<th class="txt">Test / benchmark</th>'
            f'<th class="grp">Value</th>'
            f'<th class="grp">vs previous</th>'
-           + ('<th>vs baseline</th>' if with_baseline else '')
+           + (f'<th>vs {_esc(baseline_label)}</th>' if with_baseline
+              else '')
            + '<th class="txt grp">History · trend</th>'
            '</tr></thead><tbody>']
     n_rest = 1 if with_baseline else 0
@@ -509,9 +530,9 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
                    f'{_esc(node["label"])}</button>'
                    f'<span class="gmeta">{_esc(meta)}</span></td>'
                    f'{_index_cell(points)}'
-                   f'{_pct_cell(stats["gain_prev_pct"], grp=True)}')
+                   f'{_pct_cell(_level_gain(node, "gain_prev_pct"), grp=True)}')
         if with_baseline:
-            out.append(_pct_cell(stats['gain_base_pct']))
+            out.append(_pct_cell(_level_gain(node, 'gain_base_pct')))
         # The level's index over the runs, so the shape of the number above
         out.append(f'<td class="dh grp">{_spark(points, "higher")}</td>'
                    f'</tr>')
@@ -557,9 +578,15 @@ def render_html(model: dict[str, Any], title: str) -> str:
     runs_axis = [[r['run_id'], (r['git_commit'] or '')[:8],
                   (r['timestamp'] or '')[:16]] for r in runs]
     with_baseline = bool(model['baseline_label'])
-    sections = ''.join(_render_cluster(c, run_order, with_baseline)
-                       for c in model['clusters'])
-    index = _index_series(_root_node(model['clusters']), run_order)
+    sections = ''.join(
+        _render_cluster(c, run_order, with_baseline, model['baseline_label'])
+        for c in model['clusters'])
+    root = _root_node(model['clusters'])
+    index = _index_series(root, run_order)
+    # The headline figures are the root of the tree, so they agree with the
+    # top row rather than weighing every metric equally behind its back.
+    gain_prev = _level_gain(root, 'gain_prev_pct')
+    gain_base = _level_gain(root, 'gain_base_pct')
     index_txt = f'{index[-1][0]:.1f}' if index else '—'
     runs_txt = (f"{len(runs)} run(s)"
                 + (f" · {runs[0]['git_commit'][:8]} → "
@@ -613,10 +640,10 @@ metric or six, and a benchmark with no declared base does not take part.</p>
     <div class="k">performance index (100 = the declared base)</div></div>
   <div class="stat"><div class="v">{g['n_total']}</div>
     <div class="k">benchmarks</div></div>
-  <div class="stat"><div class="v">{_fmt_gain(g['gain_prev_pct'])}</div>
-    <div class="k">against the previous run (geomean)</div></div>
-  <div class="stat"><div class="v">{_fmt_gain(g['gain_base_pct'])}</div>
-    <div class="k">against the baseline (geomean)</div></div>
+  <div class="stat"><div class="v">{_fmt_gain(gain_prev)}</div>
+    <div class="k">against the previous run</div></div>
+  <div class="stat"><div class="v">{_fmt_gain(gain_base)}</div>
+    <div class="k">against {_esc(model['baseline_label'] or 'the baseline')}</div></div>
   <div class="stat"><div class="v">{g['n_faster']} / {g['n_slower']}</div>
     <div class="k">faster / slower than the run before</div></div>
 </div>
@@ -638,20 +665,33 @@ def report(conn: sqlite3.Connection, test: str | None = None,
            branch: str | None = None, job: str | None = None,
            baseline_branch: str | None = None,
            baseline_job: str | None = None,
-           baseline_run: int | None = None) -> dict[str, Any]:
-    """Query the benchmarks and assemble the model."""
+           baseline_run: int | None = None,
+           vs_target: str | None = None) -> dict[str, Any]:
+    """Query the benchmarks and assemble the model.
+
+    `vs_target` compares the selected benchmarks with the same benchmarks
+    on another target, on the same runs — what one chip costs against
+    another. The other comparisons follow one target through time instead.
+    """
     common = dict(test=test, target=target, platform=platform,
                   kind='benchmark')
     rows = query_results(conn, branch=branch, job=job, **common)
     history = build_value_history(
         query_history(conn, branch=branch, job=job, **common))
-    baseline, label = None, ''
-    if baseline_branch or baseline_job or baseline_run is not None:
+    baseline, label, cross = None, '', False
+    if vs_target:
+        # Same branch and runs, the other chip; keyed without the target so
+        # a benchmark finds its counterpart.
+        other = query_results(conn, branch=branch, job=job,
+                              **{**common, 'target': vs_target})
+        baseline = {(t, m): row for (t, _tgt, m), row in other.items()}
+        label, cross = vs_target, True
+    elif baseline_branch or baseline_job or baseline_run is not None:
         baseline = query_results(conn, branch=baseline_branch,
                                  job=baseline_job, run=baseline_run, **common)
         label = (f'run {baseline_run}' if baseline_run is not None
                  else f'latest {baseline_branch or baseline_job}')
-    return build_model(rows, history, baseline, label)
+    return build_model(rows, history, baseline, label, cross_target=cross)
 
 
 def main() -> int:
@@ -672,6 +712,9 @@ def main() -> int:
                              'run of that branch')
     parser.add_argument('--baseline-job', default=None)
     parser.add_argument('--baseline-run', type=int, default=None)
+    parser.add_argument('--vs-target', default=None,
+                        help='Compare the selected benchmarks with the same '
+                             'benchmarks on that target')
     args = parser.parse_args()
 
     from gvtest.bench.db import init_db
@@ -680,7 +723,8 @@ def main() -> int:
                    platform=args.platform, branch=args.branch, job=args.job,
                    baseline_branch=args.baseline_branch,
                    baseline_job=args.baseline_job,
-                   baseline_run=args.baseline_run)
+                   baseline_run=args.baseline_run,
+                   vs_target=args.vs_target)
     conn.close()
     if not model['cells']:
         print('No benchmark matches the given filters. A metric joins this '

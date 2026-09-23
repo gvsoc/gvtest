@@ -1303,7 +1303,8 @@ class TestBenchmarkReport:
         html_str = benchmarks.render_html(model, 'Benchmarks')
         # the levels carry the geomean, the leaves their value
         assert '<th class="grp">Value</th>' in html_str
-        assert 'vs baseline' in html_str and 'baseline: run 1' in html_str
+        # the comparison column names what it compares against
+        assert '<th>vs run 1</th>' in html_str and 'baseline: run 1' in html_str
         assert '>900<' in html_str and '>55<' in html_str
         # a level's index: 100 is the base the testset declares
         run_order = [r['run_id'] for r in model['history']['runs']]
@@ -1376,3 +1377,38 @@ class TestBenchmarkReport:
         alone = tmp_path / 'alone'
         alone.mkdir()
         assert round(self._index(alone, short)[-1][0], 1) == 125.0
+
+    def _two_targets(self, tmp_path):
+        """The same two benchmarks on two chips, in one run."""
+        def bench(target, metric, value, better='lower'):
+            return {**_result('app:fir', target, metric, value, ref=100,
+                              src='measured'),
+                    'kind': 'benchmark', 'better': better}
+        return _make_db(tmp_path, [_run([
+            bench('chip_a', 'cycles', 80), bench('chip_a', 'bw', 60, 'higher'),
+            bench('chip_b', 'cycles', 100), bench('chip_b', 'bw', 50, 'higher'),
+        ])])
+
+    def test_a_target_compares_against_another_target(self, tmp_path):
+        from gvtest.bench import benchmarks
+        conn = sqlite3.connect(self._two_targets(tmp_path))
+        model = benchmarks.report(conn, target='chip_a', vs_target='chip_b')
+        conn.close()
+        assert model['cross_target'] and model['baseline_label'] == 'chip_b'
+        # only chip_a is shown, each cell carrying chip_b's value
+        assert {c['target'] for c in model['cells']} == {'chip_a'}
+        by_metric = {c['metric']: c for c in model['cells']}
+        # 80 against 100 cycles, and 60 against 50 bytes per cycle: chip_a is
+        # ahead on both, each in its own direction
+        assert by_metric['cycles']['baseline'] == 100
+        assert round(by_metric['cycles']['gain_base_pct'], 1) == 20.0
+        assert round(by_metric['bw']['gain_base_pct'], 1) == 20.0
+
+    def test_the_other_target_names_the_comparison_column(self, tmp_path):
+        from gvtest.bench import benchmarks
+        conn = sqlite3.connect(self._two_targets(tmp_path))
+        model = benchmarks.report(conn, target='chip_a', vs_target='chip_b')
+        conn.close()
+        html_str = benchmarks.render_html(model, 'Benchmarks')
+        assert '<th>vs chip_b</th>' in html_str
+        assert '<th>vs baseline</th>' not in html_str

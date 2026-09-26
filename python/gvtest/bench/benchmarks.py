@@ -374,6 +374,15 @@ def _value(value: float | None) -> str:
     return f'{value:.0f}' if abs(value) >= 1000 else f'{value:g}'
 
 
+def _base_cell(value: float | None, grp: bool = False) -> str:
+    """A declared base, as the plain figure the testset blessed."""
+    cls = 'num grp' if grp else 'num'
+    if value is None:
+        return f'<td class="{cls}">—</td>'
+    return (f'<td class="{cls}" title="the base this testset declares">'
+            f'{_esc(_value(value))}</td>')
+
+
 def _spark(points: list[list[Any]], better: str) -> str:
     data = json.dumps(points, separators=(',', ':'))
     return (f'<div class="sp" data-v="{_esc(data)}" '
@@ -511,7 +520,9 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
            f'<th class="grp">vs previous</th>'
            + (f'<th>vs {_esc(baseline_label)}</th>' if with_baseline
               else '')
-           + (f'<th>base vs {_esc(baseline_label)}</th>' if with_ref_cmp
+           + (f'<th class="grp">{_esc(target)} base</th>'
+              f'<th>{_esc(baseline_label)} base</th>'
+              f'<th>base vs {_esc(baseline_label)}</th>' if with_ref_cmp
               else '')
            + '<th class="txt grp">History · trend</th>'
            '</tr></thead><tbody>']
@@ -548,6 +559,7 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
         if with_baseline:
             out.append(_pct_cell(_level_gain(node, 'gain_base_pct')))
         if with_ref_cmp:
+            out.append('<td class="num grp"></td><td class="num"></td>')
             out.append(_pct_cell(_level_gain(node, 'gain_ref_pct')))
         # The level's index over the runs, so the shape of the number above
         out.append(f'<td class="dh grp">{_spark(points, "higher")}</td>'
@@ -563,6 +575,8 @@ def _render_cluster(cluster: dict[str, Any], run_order: list[int],
         if with_baseline:
             out.append(_pct_cell(cell['gain_base_pct']))
         if with_ref_cmp:
+            out.append(_base_cell(_cell_base(cell), grp=True))
+            out.append(_base_cell(cell['baseline_ref']))
             out.append(_pct_cell(cell['gain_ref_pct']))
         out.append(f'<td class="dh grp">'
                    f'{_spark(cell["spark"], cell["better"])}</td></tr>')

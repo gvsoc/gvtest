@@ -195,6 +195,14 @@ class TestPathResolution:
         result = loader.resolve_paths(['./python'], config_file)
         assert result[0] == str((subdir / 'python').resolve())
 
+    def test_env_vars_expanded(self, tmp_path, monkeypatch):
+        """${VAR} is expanded before resolving the path."""
+        monkeypatch.setenv('GVTEST_TEST_SDK', str(tmp_path / 'sdk'))
+        config_file = tmp_path / "gvtest.yaml"
+        loader = ConfigLoader(str(tmp_path))
+        result = loader.resolve_paths(['${GVTEST_TEST_SDK}/lib'], config_file)
+        assert result == [str(tmp_path / 'sdk' / 'lib')]
+
     def test_nonexistent_path_warning(self, tmp_path, caplog):
         """Non-existent paths should warn but not error."""
         import logging

@@ -246,7 +246,9 @@ class ConfigLoader:
     
     def resolve_paths(self, paths: List[str], config_file: Path) -> List[str]:
         """
-        Resolve relative paths relative to the config file directory.
+        Resolve relative paths relative to the config file directory,
+        after expanding environment variables (``${VAR}``), so that a
+        path into another SDK can come from its environment.
         
         Args:
             paths: List of paths (absolute or relative).
@@ -259,6 +261,7 @@ class ConfigLoader:
         config_dir = config_file.parent
         
         for path in paths:
+            path = os.path.expandvars(path)
             if os.path.isabs(path):
                 resolved_path = path
             else:

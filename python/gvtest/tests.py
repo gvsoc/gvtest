@@ -37,10 +37,6 @@ from typing import Any, Callable
 import psutil
 
 import gvtest.testsuite as testsuite
-from rich.console import Console
-from rich.table import Table
-
-_console = Console(highlight=False, stderr=True)
 
 
 def check_benchs(test: Any, output: str, *args: Any, **kwargs: Any) -> tuple:
@@ -101,6 +97,7 @@ class TestRun(object):
         self.current_container_name: str | None = None
         self.skip_message: str = ""
         self.status: str = "failed"
+        self.started: bool = False
         self.finished: bool = False
         self.output: str = ""
         self.timeout_reached: bool = False
@@ -315,69 +312,24 @@ class TestRun(object):
                     pass
         self.lock.release()
 
-    # Print start banner
+    def get_display_name(self) -> str:
+        """Full test name, padded so that the reported lines align."""
+        return (self.test.get_full_name() or '').ljust(
+            self.runner.get_max_testname_len() + 5)
+
+    # Report the start to the listeners
     def print_start(self) -> None:
         """Public wrapper for start message."""
         self.__print_start_message()
 
     def __print_start_message(self) -> None:
-        testname: str = (
-            self.test.get_full_name() or ''
-        ).ljust(self.runner.get_max_testname_len() + 5)
-        if self.target is not None:
-            config: str = self.target.name
-        else:
-            config = self.runner.get_config()
-        if self.runner.tui is not None:
-            self.runner.tui.test_started(
-                id(self), testname.strip(), config
-            )
-        elif self.runner.live_display is not None:
-            self.runner.live_display.test_started(
-                id(self), testname.strip(), config
-            )
-        else:
-            _console.print(
-                f"[blue]{'START'.ljust(8)}[/blue]"
-                f"[bold]{testname}[/bold] {config}"
-            )
+        self.started = True
+        self.runner.notify('test_started', self)
 
-    # Print end banner
+    # Report the status to the listeners
     def print_end_message(self) -> None:
         self.finished = True
-        testname: str = (
-            self.test.get_full_name() or ''
-        ).ljust(self.runner.get_max_testname_len() + 5)
-        if self.target is not None:
-            config: str = self.target.name
-        else:
-            config = self.runner.get_config()
-
-        status_styles: dict[str, tuple[str, str]] = {
-            'passed':   ('[green]', 'OK'),
-            'failed':   ('[red]',   'KO'),
-            'skipped':  ('[yellow]', 'SKIP'),
-            'excluded': ('[magenta]', 'EXCLUDE'),
-        }
-        style, label = status_styles.get(
-            self.status, ('[white]', '???')
-        )
-        msg = (
-            f"{style}{label.ljust(8)}[/] "
-            f"[bold]{testname}[/bold] {config}"
-        )
-
-        if self.runner.tui is not None:
-            self.runner.tui.test_finished(
-                id(self), self.status,
-                testname.strip(), config
-            )
-        elif self.runner.live_display is not None:
-            self.runner.live_display.test_finished(
-                id(self), self.status, msg
-            )
-        else:
-            _console.print(msg)
+        self.runner.notify('test_finished', self)
 
     def __exec_process(
         self, command: str | list[str],
@@ -434,6 +386,8 @@ class TestRun(object):
             self.output = self.output[:max_len]
             self.output += '\n--- Output truncated at %d bytes ---\n' % max_len
             self._output_truncated = True
+        for listener in self.runner.listeners:
+            listener.test_output(self)
         if self.runner.stdout:
             print (msg[:-1])
 
@@ -638,26 +592,29 @@ class TestCommon(object):
             return
 
         run: TestRun = TestRun(self, self.target)
-        config = (
-            self.target.name if self.target is not None
-            else self.runner.get_config()
-        )
 
         self.runner.count_test()
-        if self.runner.tui is not None:
-            self.runner.tui.count_target(config)
+        self.runs.append(run)
+        self.runner.notify('test_counted', run)
         if self.runner.is_skipped(self.get_full_name()) or self.skipped is not None:
             if self.skipped is not None:
                 run.skip_message = self.skipped
             else:
                 run.skip_message = "Skipped from command line"
             run.status = "skipped"
-            self.runs.append(run)
             run.print_end_message()
 
         else:
-            self.runs.append(run)
             self.runner.enqueue_test(run)
+
+    def rerun(self, old: TestRun) -> TestRun:
+        """Enqueue a new run in place of a finished one, on the same
+        target, and return it."""
+        run: TestRun = TestRun(self, old.target)
+        self.runs[self.runs.index(old)] = run
+        self.runner.notify('test_counted', run)
+        self.runner.enqueue_test(run)
+        return run
 
     def dump_tests(self, rows: dict[str, dict], indent_level: int) -> None:
         if self._is_filtered_by_cli_target():

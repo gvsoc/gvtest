@@ -69,6 +69,7 @@ from gvtest.tests import (
 )
 from gvtest.stats import TestRunStats, TestStats, TestsetStats
 from gvtest.reporting import table_dump_row
+from gvtest.events import RunListener, ConsoleListener
 
 
 @dataclass
@@ -224,8 +225,8 @@ class Runner():
         self.report_all: bool = report_all
         self.progress: bool = progress
         self.tolerate_missing: bool = tolerate_missing
-        self.live_display: Any = None
-        self.tui: Any = None
+        # Front ends following the run (see events.py)
+        self.listeners: list[RunListener] = []
         self.stats: TestsetStats = TestsetStats()
         self.nb_total_tests: int = 0
         self._module_cache: dict[str, Any] = {}
@@ -364,33 +365,135 @@ class Runner():
             padding=(1, 2)
         ))
 
+    def add_listener(self, listener: RunListener) -> None:
+        """Register a front end to be told about the run events."""
+        self.listeners.append(listener)
+
+    def remove_listener(self, listener: RunListener) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def notify(self, event: str, *args: Any) -> None:
+        """Call the given RunListener event on every listener."""
+        for listener in list(self.listeners):
+            getattr(listener, event)(*args)
+
     def run(self) -> None:
         self.event.clear()
         self.nb_total_tests = 0
 
-        # Start live display before enqueue so it catches
+        # Start the display before enqueue so it catches
         # skipped/excluded tests too
-        if self.progress and self.tui is None:
-            from gvtest.live_display import LiveDisplay
-            from rich.console import Console
-            self.live_display = LiveDisplay(
-                Console(highlight=False, stderr=True)
-            )
-            # Start with 0, update total after enqueue
-            self.live_display.start(0)
+        display = self._start_display()
 
         for testset in self.testsets:
             testset.enqueue()
 
-        # Update totals now that all tests are counted
-        if self.live_display is not None:
-            self.live_display.set_total(
-                self.nb_total_tests
-            )
+        self._run_pending(self.nb_total_tests, display)
+        self._build_stats()
+        self.notify('run_finished')
 
-        # Notify TUI of total test count
-        if self.tui is not None:
-            self.tui.set_total(self.nb_total_tests)
+        if (self.bench_db is not None or self.bench_url is not None) \
+                and self.bench_results:
+            from datetime import datetime as _dt, timezone as _tz
+            report = {
+                'timestamp': _dt.now(_tz.utc).isoformat(),
+                'git_commit': self._get_git_info('rev-parse', 'HEAD'),
+                'git_branch': self._git_branch(),
+                'platform': self.platform or 'gvsoc',
+                'results': self.bench_results,
+            }
+            if self.bench_db is not None:
+                self._write_bench_db(report)
+            if self.bench_url is not None:
+                self._upload_bench(report)
+
+    def rerun(self, runs: list[TestRun]) -> None:
+        """Run again the tests of the given finished runs, on the same
+        targets, and wait for them.
+
+        Each new run replaces the old one in its test, so the table, the
+        summary and the JUnit reports show the latest result. A new run
+        that an interrupt drops before it starts gives its place back to
+        the old one, which the listeners get again as counted then
+        finished. The benchmark results of a rerun are not written to the
+        bench DB or uploaded: a partial run is not a point of the history.
+        """
+        self.event.clear()
+        self._interrupted = False
+        # Nothing is running: forget the claims of the runs an
+        # interrupt dropped after they were dispatched
+        with self._resources_cond:
+            for res in self._resources.values():
+                res.in_use = 0
+                res.waiters.clear()
+
+        nb_old_results: int = len(self.bench_results)
+        display = self._start_display()
+
+        # A pytest testset runs its tests as one batch
+        batches: dict[int, tuple[Any, list[TestRun]]] = {}
+        for run in runs:
+            batch_rerun = getattr(run.test.parent, 'rerun', None)
+            if batch_rerun is not None:
+                batches.setdefault(
+                    id(run.test.parent), (batch_rerun, [])
+                )[1].append(run)
+            else:
+                run.test.rerun(run)
+        for batch_rerun, batch_runs in batches.values():
+            batch_rerun(batch_runs)
+
+        self._run_pending(len(runs), display)
+
+        # Keep the earlier result of what did not run again, and only
+        # the latest benchmark results of what did
+        replaced: set[tuple[str, str]] = set()
+        for old in runs:
+            test_runs: list[TestRun] = old.test.runs
+            new = next(
+                r for r in test_runs if r.target is old.target
+            )
+            if new.started:
+                replaced.add((
+                    old.test.get_full_name() or '',
+                    old.get_target_name()
+                ))
+            else:
+                test_runs[test_runs.index(new)] = old
+                self.notify('test_counted', old)
+                self.notify('test_finished', old)
+        self.bench_results = [
+            r for r in self.bench_results[:nb_old_results]
+            if (r['test'], r['target']) not in replaced
+        ] + self.bench_results[nb_old_results:]
+
+        self._build_stats()
+        self.notify('run_finished')
+
+    def _start_display(self) -> RunListener | None:
+        """Add the terminal output for one pass, unless a listener
+        draws the terminal itself."""
+        if any(l.owns_terminal for l in self.listeners):
+            return None
+        if self.progress:
+            from gvtest.live_display import LiveDisplay
+            display: RunListener = LiveDisplay(
+                Console(highlight=False, stderr=True)
+            )
+            # Start with 0, update total after enqueue
+            display.start(0)
+        else:
+            display = ConsoleListener()
+        self.add_listener(display)
+        return display
+
+    def _run_pending(
+        self, total: int, display: RunListener | None
+    ) -> None:
+        """Dispatch the enqueued runs and wait for them."""
+        # Update totals now that all tests are counted
+        self.notify('set_total', total)
 
         if len(self.pending_tests) > 0:
             self.check_pending_tests()
@@ -407,29 +510,17 @@ class Runner():
             while not self.event.is_set():
                 self.event.wait(timeout=0.5)
 
-        # Stop live display
-        if self.live_display is not None:
-            self.live_display.stop()
-            self.live_display = None
+        # Stop the terminal output of this pass
+        if display is not None:
+            self.remove_listener(display)
+            stop = getattr(display, 'stop', None)
+            if stop is not None:
+                stop()
 
+    def _build_stats(self) -> None:
         self.stats: TestsetStats = TestsetStats()
         for testset in self.testsets:
             self.stats.add_child_testset(testset)
-
-        if (self.bench_db is not None or self.bench_url is not None) \
-                and self.bench_results:
-            from datetime import datetime as _dt, timezone as _tz
-            report = {
-                'timestamp': _dt.now(_tz.utc).isoformat(),
-                'git_commit': self._get_git_info('rev-parse', 'HEAD'),
-                'git_branch': self._git_branch(),
-                'platform': self.platform or 'gvsoc',
-                'results': self.bench_results,
-            }
-            if self.bench_db is not None:
-                self._write_bench_db(report)
-            if self.bench_url is not None:
-                self._upload_bench(report)
 
 
 
@@ -494,9 +585,14 @@ class Runner():
             # Second Ctrl+C: force exit
             signal.signal(signal.SIGINT, self._orig_sigint)
             raise KeyboardInterrupt
-        self._interrupted = True
         print('\n--- Interrupted, killing running tests ---')
         sys.stdout.flush()
+        self.interrupt()
+
+    def interrupt(self) -> None:
+        """Stop the run: drop the tests not started yet and kill the
+        running ones. Can be called from any thread."""
+        self._interrupted = True
 
         self.lock.acquire()
         # Clear pending tests

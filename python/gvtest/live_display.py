@@ -36,6 +36,8 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
+from gvtest.events import RunListener, start_message, end_message
+
 
 def _format_duration(seconds: float) -> str:
     """Format duration as human-readable string."""
@@ -50,7 +52,7 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h{mins:02d}m"
 
 
-class LiveDisplay:
+class LiveDisplay(RunListener):
     """Progress bar that sticks to the bottom.
 
     OK/KO results scroll normally above; progress bar
@@ -95,21 +97,14 @@ class LiveDisplay:
             self.live = None
         self._started = False
 
-    def test_started(
-        self, test_id: int, name: str, config: str
-    ) -> None:
+    def test_started(self, run: Any) -> None:
         """Log START message above the progress bar."""
-        self.log(
-            f"[blue]{'START'.ljust(8)}[/blue]"
-            f"[bold]{name}[/bold] {config}"
-        )
+        self.log(start_message(run, pad=False))
 
-    def test_finished(
-        self, test_id: int, status: str,
-        message: str | None = None
-    ) -> None:
+    def test_finished(self, run: Any) -> None:
         if not self._started:
             return
+        status: str = run.status
         with self.lock:
             self.completed += 1
             if status == 'passed':
@@ -118,9 +113,9 @@ class LiveDisplay:
                 self.failed += 1
             elif status in ('skipped', 'excluded'):
                 self.skipped += 1
-            if message is not None and self.live is not None:
+            if self.live is not None:
                 self.live.console.print(
-                    message, highlight=False
+                    end_message(run), highlight=False
                 )
             self._update()
 

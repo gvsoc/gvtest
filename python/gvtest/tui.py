@@ -39,6 +39,8 @@ import time
 from datetime import datetime
 from typing import Any
 
+from gvtest.events import RunListener
+
 
 def _fmt_dur(seconds: float) -> str:
     if seconds < 60:
@@ -52,8 +54,10 @@ def _fmt_dur(seconds: float) -> str:
     return f"{hours}h{mins:02d}m"
 
 
-class CursesTUI:
+class CursesTUI(RunListener):
     """Curses-based split-pane TUI."""
+
+    owns_terminal = True
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
@@ -84,8 +88,9 @@ class CursesTUI:
         self._redraw = threading.Event()
         self._quit = False
 
-    def count_target(self, config: str) -> None:
+    def test_counted(self, run: Any) -> None:
         """Increment total count for a target."""
+        config: str = run.config
         with self.lock:
             if config not in self.target_stats:
                 self.target_stats[config] = {
@@ -97,19 +102,21 @@ class CursesTUI:
                 }
             self.target_stats[config]['total'] += 1
 
-    def test_started(
-        self, test_id: int, name: str, config: str
-    ) -> None:
+    def test_started(self, run: Any) -> None:
+        test_id: int = id(run)
+        name: str = run.get_display_name().strip()
+        config: str = run.config
         with self.lock:
             self.running[test_id] = (
                 name, config, datetime.now()
             )
             self._redraw.set()
 
-    def test_finished(
-        self, test_id: int, status: str,
-        name: str, config: str
-    ) -> None:
+    def test_finished(self, run: Any) -> None:
+        test_id: int = id(run)
+        status: str = run.status
+        name: str = run.get_display_name().strip()
+        config: str = run.config
         with self.lock:
             # Get elapsed from running entry
             run_info = self.running.pop(test_id, None)
@@ -852,7 +859,7 @@ class CursesTUI:
 def run_tui(runner: Any) -> None:
     """Launch the curses TUI."""
     tui = CursesTUI(runner)
-    runner.tui = tui
+    runner.add_listener(tui)
     curses.wrapper(tui.run)
-    runner.tui = None
+    runner.remove_listener(tui)
     tui._done.wait(timeout=5)

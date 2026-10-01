@@ -386,35 +386,49 @@ class PytestTestset:
         # Collect active (non-skipped) tests
         active_tests: list[PytestTest] = []
         for test in self.tests:
-            config = (
-                test.target.name
-                if test.target is not None
-                else self.runner.get_config()
-            )
             self.runner.count_test()
-            if self.runner.tui is not None:
-                self.runner.tui.count_target(config)
+            run = PytestTestRun(test, test.target)
+            test.runs.append(run)
+            self.runner.notify('test_counted', run)
 
             if (self.runner.is_skipped(test.get_full_name())
                     or test.skipped is not None):
                 # Handle skipped tests
-                run = PytestTestRun(test, test.target)
                 run.skip_message = (
                     test.skipped or
                     "Skipped from command line"
                 )
                 run.status = "skipped"
-                test.runs.append(run)
                 run.print_end_message()
             else:
-                # Create the run and register as pending
-                run = PytestTestRun(test, test.target)
-                test.runs.append(run)
+                # Register the run as pending
                 self.runner.lock.acquire()
                 self.runner.nb_pending_tests += 1
                 self.runner.lock.release()
                 active_tests.append(test)
 
+        self._start_batch(active_tests)
+
+    def rerun(self, old_runs: list[Any]) -> None:
+        """Run again, as one batch, the tests of the given finished
+        runs. Each new run takes the place of the old one."""
+        active_tests: list[PytestTest] = []
+        for old in old_runs:
+            test = old.test
+            run = PytestTestRun(test, old.target)
+            test.runs[test.runs.index(old)] = run
+            self._finalized.discard(test.node_id)
+            self.runner.notify('test_counted', run)
+            self.runner.lock.acquire()
+            self.runner.nb_pending_tests += 1
+            self.runner.lock.release()
+            active_tests.append(test)
+
+        self._start_batch(active_tests)
+
+    def _start_batch(
+        self, active_tests: list[PytestTest]
+    ) -> None:
         if not active_tests:
             return
 
@@ -646,6 +660,10 @@ class PytestTestset:
                     print(run.output)
                 if test.node_id not in self._finalized:
                     run.print_end_message()
+                else:
+                    # Announced live: the output and the
+                    # duration only come now
+                    self.runner.notify('test_updated', run)
                 self.runner.terminate(run)
 
     def _parse_results(

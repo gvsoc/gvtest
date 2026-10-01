@@ -34,7 +34,11 @@ def tests(runner, args):
     runner.tests()
 
 def run(runner, args):
-    runner.run()
+    if args.gui:
+        from gvtest.gui import run_gui
+        run_gui(runner, args.gui_host, args.gui_port)
+    else:
+        runner.run()
 
 def table(runner, args):
     runner.dump_table()
@@ -126,6 +130,23 @@ parser.add_argument(
     "--tui", dest="tui",
     action="store_true",
     help="Launch full-screen TUI with split-pane display"
+)
+parser.add_argument(
+    "--gui", dest="gui",
+    action="store_true",
+    help="Serve a web GUI following the run and print its URL. gvtest "
+    "keeps serving it once the tests are done, so they can be browsed "
+    "and run again, until Quit in the page or Ctrl+C."
+)
+parser.add_argument(
+    "--gui-host", dest="gui_host", default='127.0.0.1',
+    help="Address the GUI listens on; 0.0.0.0 makes it reachable from "
+    "other machines. Default: %(default)s"
+)
+parser.add_argument(
+    "--gui-port", dest="gui_port", type=int, default=None,
+    help="Port the GUI listens on. Default: 8730, or a free port when "
+    "it is taken"
 )
 parser.add_argument(
     "--max-output-len", dest="max_output_len", type=int,

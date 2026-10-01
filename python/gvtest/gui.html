@@ -1,0 +1,929 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gvtest</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #dfe3e8; --text: #1c2430;
+  --muted: #6b7684; --hover: #eef1f5; --sel: #dbe7ff;
+  --passed: #1a8a4a; --passed-bg: #dff3e6;
+  --failed: #c62f2f; --failed-bg: #fbe1e1;
+  --running: #1d63d8; --running-bg: #dde9fd;
+  --skipped: #94700a; --skipped-bg: #f8edc9;
+  --excluded: #8a3fa8; --excluded-bg: #f0e0f6;
+  --pending: #7c8794; --pending-bg: #e9ecf0;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181d; --panel: #1b2027; --line: #2c343e; --text: #dde3ea;
+    --muted: #8c97a5; --hover: #232a33; --sel: #253a5e;
+    --passed: #5fd08a; --passed-bg: #183524;
+    --failed: #ff7b7b; --failed-bg: #461d1d;
+    --running: #7fb0ff; --running-bg: #1b2f52;
+    --skipped: #e2bf55; --skipped-bg: #3c3212;
+    --excluded: #d39bea; --excluded-bg: #37203f;
+    --pending: #8c97a5; --pending-bg: #262d36;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column;
+}
+button, input { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--hover); }
+button:disabled { opacity: .45; cursor: default; }
+button.danger { color: var(--failed); }
+
+header {
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px;
+  align-items: center;
+}
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+header h1 span { color: var(--muted); font-weight: 400; }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .03em; background: var(--pending-bg);
+  color: var(--pending);
+}
+.badge.running { background: var(--running-bg); color: var(--running); }
+.badge.idle { background: var(--passed-bg); color: var(--passed); }
+.badge.idle.bad, .badge.lost {
+  background: var(--failed-bg); color: var(--failed);
+}
+#bar {
+  flex: 1 1 220px; min-width: 160px; height: 8px; border-radius: 4px;
+  background: var(--pending-bg); display: flex; overflow: hidden;
+}
+#bar i { display: block; height: 100%; }
+#bar .passed { background: var(--passed); }
+#bar .failed { background: var(--failed); }
+#bar .skipped { background: var(--skipped); }
+#bar .running { background: var(--running); }
+#numbers { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#numbers b { font-weight: 600; }
+#actions { display: flex; gap: 6px; }
+
+#filters {
+  padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 6px 14px;
+  align-items: center; border-bottom: 1px solid var(--line);
+}
+#search {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; width: 220px;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.chips > span { color: var(--muted); margin-right: 2px; }
+.chip {
+  border: 1px solid var(--line); background: var(--panel);
+  border-radius: 12px; padding: 1px 9px; cursor: pointer;
+  white-space: nowrap; user-select: none;
+}
+.chip:hover { background: var(--hover); }
+.chip.on {
+  background: var(--sel); border-color: var(--running);
+}
+.chip small { color: var(--muted); margin-left: 3px; }
+
+.tabs { display: flex; }
+.tabs span {
+  border: 1px solid var(--line); background: var(--panel);
+  padding: 2px 12px; cursor: pointer; user-select: none;
+}
+.tabs span:first-child { border-radius: 6px 0 0 6px; }
+.tabs span:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.tabs span.on {
+  background: var(--sel); border-color: var(--running); font-weight: 600;
+}
+.tabs span.on + span { border-left: 1px solid var(--running); }
+body:not(.view-tests) .tests-only { display: none; }
+
+main { flex: 1; display: flex; min-height: 0; }
+#matrix, #live { flex: 1 1 55%; min-width: 0; }
+#matrix { overflow: auto; }
+body:not(.view-tests) #matrix { display: none; }
+body:not(.view-live) #live { display: none; }
+
+#live {
+  display: grid; gap: 10px; padding: 10px; min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; display: flex; flex-direction: column;
+  min-height: 0; min-width: 0;
+}
+.panel h2 {
+  margin: 0; padding: 6px 12px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.panel h2 small { text-transform: none; letter-spacing: 0;
+                  font-weight: 400; margin-left: 6px; }
+.panel .body { flex: 1; overflow: auto; min-height: 0; padding: 4px 0; }
+#p-results { grid-row: 1 / span 2; }
+#p-targets { max-height: 45vh; }
+.none { padding: 8px 12px; color: var(--muted); }
+.line {
+  display: flex; gap: 10px; padding: 1px 12px; cursor: pointer;
+  font-family: var(--mono); font-size: 12px; white-space: nowrap;
+}
+.line:hover { background: var(--hover); }
+.line.sel { background: var(--sel); }
+.line .lab { flex: 0 0 52px; font-weight: 700; background: none; }
+.line .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.line .tg, .line .du { color: var(--muted); }
+.line .du { flex: 0 0 52px; text-align: right;
+            font-variant-numeric: tabular-nums; }
+#targets-table { width: 100%; }
+#targets-table td { border: 0; padding: 3px 6px; }
+#targets-table td:first-child { padding-left: 12px; }
+#targets-table td:last-child { padding-right: 12px; }
+#targets-table tr { cursor: pointer; }
+#targets-table td.bar { width: 100%; }
+#targets-table td.n { text-align: right;
+                      font-variant-numeric: tabular-nums; }
+.tbar {
+  height: 8px; border-radius: 4px; background: var(--pending-bg);
+  display: flex; overflow: hidden; min-width: 60px;
+}
+.tbar i { display: block; height: 100%; }
+.tbar .passed { background: var(--passed); }
+.tbar .failed { background: var(--failed); }
+.tbar .skipped { background: var(--skipped); }
+.tbar .running { background: var(--running); }
+#empty { padding: 30px; color: var(--muted); }
+table { border-collapse: separate; border-spacing: 0; }
+th, td {
+  padding: 2px 8px; border-bottom: 1px solid var(--line);
+  white-space: nowrap; text-align: left;
+}
+thead th {
+  position: sticky; top: 0; background: var(--bg); z-index: 2;
+  font-weight: 600; color: var(--muted); font-size: 12px;
+  text-align: center;
+}
+th.name, td.name {
+  position: sticky; left: 0; background: var(--bg); z-index: 1;
+  text-align: left;
+}
+thead th.name { z-index: 3; }
+table.compact thead th:not(.name) {
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  text-align: left; padding: 6px 2px; vertical-align: bottom;
+}
+tr.group td.name { font-weight: 600; cursor: pointer; }
+tr.group td.name::before {
+  content: "▾"; display: inline-block; width: 14px; color: var(--muted);
+}
+tr.group.closed td.name::before { content: "▸"; }
+tr.test td.name { font-family: var(--mono); font-size: 12px; }
+tr:hover td { background: var(--hover); }
+td.c { text-align: center; }
+.cell {
+  display: inline-block; min-width: 54px; padding: 0 6px;
+  border-radius: 4px; font-size: 12px; cursor: pointer;
+  font-variant-numeric: tabular-nums; border: 1px solid transparent;
+}
+table.compact .cell { min-width: 22px; padding: 0 2px; }
+.cell.agg { cursor: default; background: none !important; }
+.cell.sel { border-color: var(--text); }
+.s-passed { background: var(--passed-bg); color: var(--passed); }
+.s-failed { background: var(--failed-bg); color: var(--failed);
+            font-weight: 600; }
+.s-running { background: var(--running-bg); color: var(--running);
+             animation: pulse 1.4s ease-in-out infinite; }
+.s-skipped { background: var(--skipped-bg); color: var(--skipped); }
+.s-excluded { background: var(--excluded-bg); color: var(--excluded); }
+.s-pending, .s-cancelled {
+  background: var(--pending-bg); color: var(--pending);
+}
+.s-cancelled { text-decoration: line-through; }
+@keyframes pulse { 50% { opacity: .55; } }
+
+#detail {
+  flex: 1 1 45%; min-width: 0; border-left: 1px solid var(--line);
+  background: var(--panel); display: none; flex-direction: column;
+}
+#detail.open { display: flex; }
+#dhead {
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+#dname {
+  font-family: var(--mono); font-weight: 600; word-break: break-all;
+  flex: 1 1 200px;
+}
+#dbody { flex: 1; overflow: auto; padding: 10px 14px; min-height: 0;
+         display: flex; flex-direction: column; gap: 10px; }
+#dbody h3 {
+  margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted);
+}
+#dbody h3 label { text-transform: none; letter-spacing: 0;
+                  margin-left: 10px; font-weight: 400; }
+#dmeta { color: var(--muted); }
+#dmeta b { color: var(--text); font-weight: 500; }
+pre {
+  margin: 0; font-family: var(--mono); font-size: 12px;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; white-space: pre-wrap;
+  word-break: break-all;
+}
+#dcmds { max-height: 160px; overflow: auto; }
+#dout { flex: 1 0 200px; overflow: auto; }
+#dout .mark { color: var(--running); font-weight: 600; }
+#dbench td, #dbench th { padding: 1px 12px 1px 0; border: 0; }
+#dbench th { color: var(--muted); font-weight: 500; position: static;
+             background: none; text-align: left; }
+#dbench .num { text-align: right; font-variant-numeric: tabular-nums; }
+#dbench .bad { color: var(--failed); font-weight: 600; }
+#dbench .ok { color: var(--passed); }
+@media (max-width: 900px) {
+  main { flex-direction: column; }
+  #live { grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: minmax(160px, 1fr) minmax(100px, auto) auto; }
+  #p-results { grid-row: auto; }
+  #detail { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>gvtest <span id="title"></span></h1>
+  <span id="state" class="badge">connecting</span>
+  <div id="bar"></div>
+  <div id="numbers"></div>
+  <div id="actions">
+    <button id="stop" class="danger" disabled>Stop</button>
+    <button id="rerun-failed" disabled>Rerun failed</button>
+    <button id="rerun-shown" disabled>Rerun shown</button>
+    <button id="quit" title="Leave gvtest: it prints its report in the terminal and exits">Quit</button>
+  </div>
+</header>
+<div id="filters">
+  <div class="tabs" id="views">
+    <span data-view="live" title="Running tests, results as they come, targets (1)">Live</span>
+    <span data-view="tests" title="All the tests, by testset and target (2)">Tests</span>
+  </div>
+  <input id="search" type="search" placeholder="Filter by name  ( / )">
+  <div class="chips" id="status-chips"></div>
+  <div class="chips" id="target-chips"></div>
+  <div class="chips tests-only">
+    <span class="chip" id="expand">Expand all</span>
+    <span class="chip" id="collapse">Collapse all</span>
+  </div>
+</div>
+<main>
+  <div id="live">
+    <section class="panel" id="p-results">
+      <h2>Results <small id="results-note"></small></h2>
+      <div class="body" id="results"></div>
+    </section>
+    <section class="panel" id="p-running">
+      <h2>Running <small id="running-note"></small></h2>
+      <div class="body" id="running"></div>
+    </section>
+    <section class="panel" id="p-targets">
+      <h2>Targets</h2>
+      <div class="body"><table id="targets-table"></table></div>
+    </section>
+  </div>
+  <div id="matrix"><div id="empty">Waiting for gvtest…</div></div>
+  <aside id="detail">
+    <div id="dhead">
+      <span id="dname"></span>
+      <span id="dstatus" class="cell"></span>
+      <button id="drerun">Rerun</button>
+      <button id="dclose" title="Close (Esc)">✕</button>
+    </div>
+    <div id="dbody">
+      <div id="dmeta"></div>
+      <div id="dcmds-box"><h3>Commands</h3><pre id="dcmds"></pre></div>
+      <div id="dbench-box"><h3>Benchmarks</h3><table id="dbench"></table></div>
+      <h3>Output <label><input type="checkbox" id="follow" checked> follow</label></h3>
+      <pre id="dout"></pre>
+    </div>
+  </aside>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const token = new URLSearchParams(location.search).get('token') || '';
+const api = (path, args) =>
+  path + '?' + new URLSearchParams({token, ...(args || {})});
+
+const STATUSES = ['failed', 'running', 'pending', 'passed', 'skipped',
+                  'excluded', 'cancelled'];
+const RERUNNABLE = ['passed', 'failed', 'cancelled'];
+
+const rows = new Map();        // id -> {id, name, target, status, ...}
+let targets = [];              // in order of appearance
+let state = 'connecting';
+let passStarted = null, passEnded = null;
+let clockSkew = 0;             // browser clock - gvtest clock, seconds
+let statusFilter = 'all';
+const hiddenTargets = new Set();
+const closed = new Set();      // collapsed group paths
+let search = [];
+let selected = null;           // row id shown in the detail panel
+let pendingSelect = decodeURIComponent(location.hash.slice(1));
+let shownIds = [];
+let view = 'live';             // 'live' or 'tests'
+try {
+  if (localStorage.getItem('gvtest-view') === 'tests') view = 'tests';
+} catch (e) {}
+document.body.className = 'view-' + view;
+
+// The results panel shows at most this many of the latest results
+const MAX_RESULTS = 3000;
+const LABELS = {passed: 'OK', failed: 'KO', skipped: 'SKIP',
+                excluded: 'EXCLUDE', cancelled: 'CANCEL'};
+
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function fmtDur(s) {
+  if (s < 60) return s.toFixed(1) + 's';
+  const m = Math.floor(s / 60), r = Math.floor(s % 60);
+  if (m < 60) return m + 'm' + String(r).padStart(2, '0') + 's';
+  return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm';
+}
+const now = () => Date.now() / 1000 - clockSkew;
+
+function cellText(row, compact) {
+  switch (row.status) {
+    case 'passed': return compact ? '✓' : fmtDur(row.duration);
+    case 'failed': return compact ? '✗' : fmtDur(row.duration);
+    case 'running':
+      return compact ? '▶' : fmtDur(Math.max(0, now() - row.started));
+    case 'pending': return '·';
+    case 'skipped': return compact ? '⊘' : 'skip';
+    case 'excluded': return compact ? '⊘' : 'excl';
+    default: return '—';
+  }
+}
+
+// ---- the tree × target matrix ---------------------------------------
+
+function buildTree(visibleRows) {
+  const root = {children: new Map(), cells: new Map(), path: ''};
+  for (const row of visibleRows) {
+    let node = root;
+    for (const part of row.name.split(':')) {
+      let child = node.children.get(part);
+      if (!child) {
+        child = {name: part, children: new Map(), cells: new Map(),
+                 path: node.path ? node.path + ':' + part : part};
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+    node.cells.set(row.target, row);
+  }
+  return root;
+}
+
+// Per target, how many runs of each status a node holds
+function aggregate(node) {
+  node.agg = new Map();
+  for (const [target, row] of node.cells)
+    node.agg.set(target, {[row.status]: 1, total: 1});
+  for (const child of node.children.values()) {
+    aggregate(child);
+    for (const [target, counts] of child.agg) {
+      let mine = node.agg.get(target);
+      if (!mine) node.agg.set(target, mine = {total: 0});
+      for (const k in counts) mine[k] = (mine[k] || 0) + counts[k];
+    }
+  }
+}
+
+function aggCell(counts, compact) {
+  if (!counts) return '';
+  const done = (counts.passed || 0);
+  const ran = counts.total - (counts.skipped || 0) - (counts.excluded || 0);
+  let cls = 'pending';
+  if (counts.failed) cls = 'failed';
+  else if (counts.running) cls = 'running';
+  else if (counts.pending) cls = 'pending';
+  else if (counts.cancelled) cls = 'cancelled';
+  else if (ran === 0) cls = 'skipped';
+  else cls = 'passed';
+  let text = done + '/' + ran;
+  if (compact)
+    text = counts.failed ? counts.failed : (cls === 'passed' ? '✓' : '·');
+  const tip = STATUSES.filter(s => counts[s])
+    .map(s => counts[s] + ' ' + s).join(', ');
+  return `<span class="cell agg s-${cls}" style="color:var(--${
+    cls === 'cancelled' ? 'pending' : cls})" title="${tip}">${text}</span>`;
+}
+
+function matches(row) {
+  if (hiddenTargets.has(row.target)) return false;
+  const name = row.name.toLowerCase();
+  return search.every(term => name.includes(term));
+}
+
+function render() {
+  const inScope = [...rows.values()].filter(matches);
+
+  // Counters and chips follow the name and target filters
+  const counts = {};
+  for (const row of inScope)
+    counts[row.status] = (counts[row.status] || 0) + 1;
+
+  shownIds = inScope.filter(r =>
+    (statusFilter === 'all' || r.status === statusFilter)
+    && RERUNNABLE.includes(r.status)).map(r => r.id);
+  renderHeader(inScope.length, counts);
+  renderChips(inScope.length, counts);
+  document.body.className = 'view-' + view;
+  for (const tab of $('views').children)
+    tab.classList.toggle('on', tab.dataset.view === view);
+  if (view === 'live') renderLive(inScope);
+  else renderMatrix(inScope);
+}
+
+// ---- the live view: results as they come, running tests, targets -----
+
+function line(row, last) {
+  const label = LABELS[row.status];
+  return `<div class="line${row.id === selected ? ' sel' : ''}" data-id="${
+    row.id}">` + (label ? `<span class="lab s-${row.status}">${label}</span>`
+                        : '')
+    + `<span class="nm" title="${esc(row.name)}">${esc(row.name)}</span>`
+    + `<span class="tg">${esc(row.target)}</span>${last}</div>`;
+}
+
+function renderLive(inScope) {
+  // Results, in the order they came; the status filter applies to them
+  let results = inScope.filter(r => r.finished !== null
+    && r.finished !== undefined
+    && (statusFilter === 'all' || r.status === statusFilter));
+  results.sort((a, b) => a.finished - b.finished || a.id - b.id);
+  const hidden = Math.max(0, results.length - MAX_RESULTS);
+  if (hidden) results = results.slice(hidden);
+  const box = $('results');
+  // Follow the latest results unless the list was scrolled up
+  const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  const top = box.scrollTop;
+  box.innerHTML = (hidden ? `<div class="none">… ${hidden} earlier results `
+      + 'are in the Tests view …</div>' : '')
+    + (results.map(r => line(r, `<span class="du">${
+        r.status === 'passed' || r.status === 'failed'
+          ? fmtDur(r.duration) : ''}</span>`)).join('')
+      || '<div class="none">No result yet.</div>');
+  box.scrollTop = follow ? box.scrollHeight : top;
+  $('results-note').textContent = results.length + hidden
+    + (follow ? '' : ' · scrolled up, new results are below');
+
+  const running = inScope.filter(r => r.status === 'running')
+    .sort((a, b) => a.started - b.started);
+  const pending = inScope.filter(r => r.status === 'pending').length;
+  $('running').innerHTML = running.map(r => line(r,
+      `<span class="du" data-live="${r.started}">${
+        fmtDur(Math.max(0, now() - r.started))}</span>`)).join('')
+    || `<div class="none">${state === 'running' ? 'Nothing is running.'
+        : 'The run is over.'}</div>`;
+  $('running-note').textContent = running.length
+    + (pending ? ` · ${pending} pending` : '');
+
+  // One line per target: progress, counts, time spent in its tests
+  const stats = new Map();
+  for (const row of inScope) {
+    let st = stats.get(row.target);
+    if (!st) stats.set(row.target, st = {total: 0, time: 0});
+    st.total++;
+    st[row.status] = (st[row.status] || 0) + 1;
+    if (row.status === 'passed' || row.status === 'failed')
+      st.time += row.duration;
+  }
+  $('targets-table').innerHTML = targets.filter(t => stats.has(t)).map(t => {
+    const st = stats.get(t), n = s => st[s] || 0;
+    const skipped = n('skipped') + n('excluded');
+    const done = n('passed') + n('failed') + skipped + n('cancelled');
+    const seg = (cls, value) => value
+      ? `<i class="${cls}" style="width:${100 * value / st.total}%"></i>` : '';
+    return `<tr data-target="${esc(t)}" title="Show ${esc(t)} in the Tests `
+      + `view"><td>${esc(t)}</td><td class="bar"><div class="tbar">`
+      + seg('passed', n('passed')) + seg('failed', n('failed'))
+      + seg('skipped', skipped) + seg('running', n('running'))
+      + '</div></td>'
+      + `<td class="n" style="color:var(--passed)">✓ ${n('passed')}</td>`
+      + `<td class="n" style="color:var(--failed)">✗ ${n('failed')}</td>`
+      + `<td class="n" style="color:var(--skipped)">⊘ ${skipped}</td>`
+      + `<td class="n">${done}/${st.total}</td>`
+      + `<td class="n" title="Time spent in the tests of this target">${
+        fmtDur(st.time)}</td></tr>`;
+  }).join('');
+}
+
+function renderMatrix(inScope) {
+  // A test line is shown when one of its runs has the wanted status
+  const wanted = statusFilter === 'all' ? null : new Set(
+    inScope.filter(r => r.status === statusFilter).map(r => r.name));
+  const visible = wanted ? inScope.filter(r => wanted.has(r.name)) : inScope;
+
+  const cols = targets.filter(t => !hiddenTargets.has(t)
+    && visible.some(r => r.target === t));
+  const compact = cols.length > 8;
+  const root = buildTree(visible);
+  aggregate(root);
+
+  const html = [];
+  const walk = (node, depth) => {
+    for (const child of node.children.values()) {
+      const pad = `style="padding-left:${8 + depth * 16}px"`;
+      const isGroup = child.children.size > 0;
+      if (isGroup) {
+        const isClosed = closed.has(child.path);
+        html.push(`<tr class="group${isClosed ? ' closed' : ''}" data-path="${
+          esc(child.path)}"><td class="name" ${pad}>${esc(child.name)}</td>`);
+        for (const t of cols)
+          html.push(`<td class="c">${aggCell(child.agg.get(t), compact)}</td>`);
+        html.push('</tr>');
+      }
+      if (child.cells.size) {
+        html.push(`<tr class="test"><td class="name" ${pad} title="${
+          esc(child.path)}">${esc(child.name)}</td>`);
+        for (const t of cols) {
+          const row = child.cells.get(t);
+          if (!row) { html.push('<td></td>'); continue; }
+          const live = row.status === 'running' && !compact
+            ? ` data-live="${row.started}"` : '';
+          html.push(`<td class="c"><span class="cell s-${row.status}${
+            row.id === selected ? ' sel' : ''}" data-id="${row.id}"${live
+            } title="${esc(row.name)} @ ${esc(t)}: ${row.status}">${
+            cellText(row, compact)}</span></td>`);
+        }
+        html.push('</tr>');
+      }
+      if (isGroup && !closed.has(child.path)) walk(child, depth + 1);
+    }
+  };
+  walk(root, 0);
+
+  const matrix = $('matrix');
+  if (!html.length) {
+    matrix.innerHTML = `<div id="empty">${rows.size
+      ? 'No test matches the filters.' : 'Waiting for gvtest…'}</div>`;
+    return;
+  }
+  const head = cols.map(t => `<th title="${esc(t)}">${esc(t)}</th>`).join('');
+  const top = matrix.scrollTop, left = matrix.scrollLeft;
+  matrix.innerHTML = `<table class="${compact ? 'compact' : ''}"><thead><tr>`
+    + `<th class="name">Test</th>${head}</tr></thead><tbody>`
+    + html.join('') + '</tbody></table>';
+  matrix.scrollTop = top; matrix.scrollLeft = left;
+}
+
+function renderHeader(total, counts) {
+  const n = s => counts[s] || 0;
+  const skipped = n('skipped') + n('excluded');
+  const seg = (cls, value) => value
+    ? `<i class="${cls}" style="width:${100 * value / total}%"></i>` : '';
+  $('bar').innerHTML = seg('passed', n('passed')) + seg('failed', n('failed'))
+    + seg('skipped', skipped) + seg('running', n('running'));
+  const done = n('passed') + n('failed') + skipped + n('cancelled');
+  let elapsed = '';
+  if (passStarted !== null)
+    elapsed = ' · ' + fmtDur(Math.max(0, (passEnded || now()) - passStarted));
+  $('numbers').innerHTML = `<b>${done}</b>/${total}`
+    + ` · <span style="color:var(--passed)">✓ ${n('passed')}</span>`
+    + ` <span style="color:var(--failed)">✗ ${n('failed')}</span>`
+    + ` <span style="color:var(--skipped)">⊘ ${skipped}</span>`
+    + `<span id="elapsed">${elapsed}</span>`;
+
+  const badge = $('state');
+  const labels = {running: 'running', idle: 'done', exited: 'gvtest exited',
+                  lost: 'disconnected', starting: 'starting',
+                  connecting: 'connecting'};
+  badge.textContent = labels[state] || state;
+  badge.className = 'badge ' + state
+    + (state === 'idle' && (n('failed') || n('cancelled')) ? ' bad' : '')
+    + (state === 'exited' ? ' lost' : '');
+
+  const idle = state === 'idle';
+  let failed = 0;
+  for (const row of rows.values())
+    if (row.status === 'failed' || row.status === 'cancelled') failed++;
+  $('stop').disabled = state !== 'running';
+  $('rerun-failed').disabled = !idle || !failed;
+  $('rerun-failed').textContent = `Rerun failed (${failed})`;
+  $('quit').disabled = state === 'exited' || state === 'lost';
+}
+
+function renderChips(total, counts) {
+  const chip = (key, label, count) =>
+    `<span class="chip${statusFilter === key ? ' on' : ''}" data-status="${
+      key}">${label}<small>${count}</small></span>`;
+  let html = chip('all', 'All', total);
+  for (const s of STATUSES)
+    if (counts[s] || statusFilter === s)
+      html += chip(s, s[0].toUpperCase() + s.slice(1), counts[s] || 0);
+  $('status-chips').innerHTML = html;
+
+  $('target-chips').innerHTML = targets.length < 2 ? '' :
+    '<span>Targets</span>' + targets.map(t =>
+      `<span class="chip${hiddenTargets.has(t) ? '' : ' on'}" data-target="${
+        esc(t)}">${esc(t)}</span>`).join('');
+
+  $('rerun-shown').disabled = state !== 'idle' || !shownIds.length;
+  $('rerun-shown').textContent = `Rerun shown (${shownIds.length})`;
+}
+
+let renderTimer = null;
+function scheduleRender() {
+  if (renderTimer === null)
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      render();
+    }, 150);
+}
+
+// Running tests and the pass show their elapsed time
+setInterval(() => {
+  for (const el of document.querySelectorAll('[data-live]'))
+    el.textContent = fmtDur(Math.max(0, now() - Number(el.dataset.live)));
+  if (state === 'running' && passStarted !== null)
+    $('elapsed').textContent = ' · ' + fmtDur(Math.max(0, now() - passStarted));
+  const row = rows.get(selected);
+  if (row && row.status === 'running') showStatus(row);
+}, 1000);
+
+// ---- the detail panel -----------------------------------------------
+
+let tail = null;       // EventSource on the output of the selected run
+let detailSeq = 0;
+
+function showStatus(row) {
+  const el = $('dstatus');
+  el.className = 'cell s-' + row.status;
+  el.textContent = row.status + (
+    ['passed', 'failed', 'running'].includes(row.status)
+      ? ' · ' + cellText(row, false) : '');
+  $('drerun').disabled = state !== 'idle' || !RERUNNABLE.includes(row.status);
+}
+
+function appendOutput(text) {
+  const out = $('dout');
+  // Strip the terminal colour sequences
+  text = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  out.insertAdjacentHTML('beforeend', esc(text).replace(
+    /^--- .* ---$/gm, m => `<span class="mark">${m}</span>`));
+  if ($('follow').checked) out.scrollTop = out.scrollHeight;
+}
+
+function closeTail() {
+  if (tail) { tail.close(); tail = null; }
+}
+
+async function loadDetail() {
+  const id = selected, seq = ++detailSeq;
+  closeTail();
+  if (id === null) return;
+  let d;
+  try {
+    const response = await fetch(api('/api/run', {id}));
+    if (!response.ok) return;
+    d = await response.json();
+  } catch (e) { return; }
+  if (seq !== detailSeq) return;
+
+  $('dname').textContent = d.name + '  @ ' + d.target;
+  showStatus(rows.get(id) || d);
+
+  const meta = [];
+  if (d.description) meta.push(esc(d.description));
+  if (d.skip_message) meta.push('Skipped: <b>' + esc(d.skip_message) + '</b>');
+  if (d.timeout && d.status === 'failed') meta.push('<b>Timeout reached</b>');
+  if (d.node_id) meta.push('pytest <b>' + esc(d.node_id) + '</b>');
+  $('dmeta').innerHTML = meta.join('<br>');
+
+  const cmds = [];
+  if (d.path) cmds.push('cd ' + d.path);
+  if (d.sourceme) cmds.push('source ' + d.sourceme);
+  for (const c of d.commands)
+    cmds.push(c.kind === 'shell' ? c.cmd : `# ${c.name || c.kind} (${c.kind})`);
+  $('dcmds').textContent = cmds.join('\n');
+  $('dcmds-box').style.display = d.commands.length ? '' : 'none';
+
+  $('dbench-box').style.display = d.benchs.length ? '' : 'none';
+  $('dbench').innerHTML = '<tr><th>Metric</th><th class="num">Value</th>'
+    + '<th class="num">Reference</th><th class="num">Δ</th>'
+    + '<th class="num">Tolerance</th><th></th></tr>' + d.benchs.map(b => {
+      const hasRef = b.ref !== null && b.ref !== undefined;
+      const delta = hasRef && b.ref !== 0
+        ? (100 * (b.value - b.ref) / b.ref).toFixed(1) + '%' : '';
+      const gated = hasRef && b.tol !== null && b.tol !== undefined;
+      const cls = gated
+        ? (Math.abs(b.value - b.ref) <= b.tol ? 'ok' : 'bad') : '';
+      return `<tr title="${esc(b.description || '')}"><td>${esc(b.metric)}</td>`
+        + `<td class="num">${b.value}</td>`
+        + `<td class="num">${hasRef ? b.ref : ''}</td>`
+        + `<td class="num ${cls}">${delta}</td>`
+        + `<td class="num">${gated ? '± ' + b.tol : ''}</td>`
+        + `<td>${esc(b.ref_type || '')}</td></tr>`;
+    }).join('');
+
+  $('dout').textContent = d.hidden
+    ? `… ${d.hidden} earlier characters not shown …\n` : '';
+  appendOutput(d.output);
+
+  // Follow the output while the test runs; its end comes as a row
+  // change, which loads the final details again
+  if (d.status === 'running' || d.status === 'pending') {
+    tail = new EventSource(api('/api/tail', {id, offset: d.offset}));
+    const mine = tail;
+    tail.onmessage = event => {
+      const msg = JSON.parse(event.data);
+      if (msg.text) appendOutput(msg.text);
+      if (msg.end) mine.close();
+    };
+    tail.onerror = () => mine.close();
+  }
+}
+
+function select(id) {
+  selected = id;
+  const row = rows.get(id);
+  $('detail').classList.toggle('open', id !== null);
+  history.replaceState(null, '', location.search
+    + (row ? '#' + encodeURIComponent(row.name + '@' + row.target) : ''));
+  for (const el of document.querySelectorAll('.sel[data-id]'))
+    el.classList.remove('sel');
+  if (id !== null)
+    for (const el of document.querySelectorAll(`[data-id="${id}"]`))
+      el.classList.add('sel');
+  loadDetail();
+}
+
+// ---- events from gvtest ---------------------------------------------
+
+function applyRow(row) {
+  const old = rows.get(row.id);
+  rows.set(row.id, row);
+  if (!targets.includes(row.target)) targets.push(row.target);
+  if (pendingSelect && pendingSelect === row.name + '@' + row.target) {
+    pendingSelect = '';
+    select(row.id);
+  } else if (row.id === selected && (!old || old.status !== row.status
+             || old.duration !== row.duration)) {
+    loadDetail();
+  }
+}
+
+function applyState(msg) {
+  state = msg.state;
+  passStarted = msg.started;
+  passEnded = msg.ended;
+  clockSkew = Date.now() / 1000 - msg.now;
+  const row = rows.get(selected);
+  if (row) showStatus(row);
+}
+
+const events = new EventSource(api('/api/events'));
+events.onmessage = event => {
+  const msg = JSON.parse(event.data);
+  if (msg.t === 'snapshot') {
+    rows.clear();
+    targets = [];
+    $('title').textContent = '· ' + msg.title;
+    document.title = 'gvtest · ' + msg.title;
+    applyState(msg);
+    for (const row of msg.rows) applyRow(row);
+  } else if (msg.t === 'row') {
+    applyRow(msg.row);
+  } else if (msg.t === 'state') {
+    applyState(msg);
+  } else if (msg.t === 'bye') {
+    state = 'exited';
+    events.close();
+    closeTail();
+  }
+  scheduleRender();
+};
+events.onerror = () => {
+  if (state !== 'exited') state = 'lost';
+  scheduleRender();
+};
+
+// ---- actions --------------------------------------------------------
+
+async function post(path, body) {
+  try {
+    const response = await fetch(api(path), {
+      method: 'POST', body: JSON.stringify(body || {}),
+      headers: {'X-Gvtest-Token': token},
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      alert(error.error || 'gvtest refused: ' + response.status);
+    }
+  } catch (e) {
+    alert('gvtest is not reachable');
+  }
+}
+const rerun = ids => ids.length && post('/api/rerun', {ids});
+
+$('stop').onclick = () => post('/api/stop');
+$('quit').onclick = () => {
+  if (confirm('Quit gvtest? Running tests are killed.')) post('/api/quit');
+};
+$('rerun-failed').onclick = () => rerun([...rows.values()].filter(
+  r => r.status === 'failed' || r.status === 'cancelled').map(r => r.id));
+$('rerun-shown').onclick = () => rerun(shownIds);
+$('drerun').onclick = () => rerun([selected]);
+$('dclose').onclick = () => select(null);
+
+$('matrix').onclick = event => {
+  const cell = event.target.closest('.cell[data-id]');
+  if (cell) { select(Number(cell.dataset.id)); return; }
+  const group = event.target.closest('tr.group');
+  if (group) {
+    const path = group.dataset.path;
+    if (!closed.delete(path)) closed.add(path);
+    render();
+  }
+};
+function setView(name) {
+  view = name;
+  try { localStorage.setItem('gvtest-view', view); } catch (e) {}
+  render();
+}
+$('views').onclick = event => {
+  const tab = event.target.closest('[data-view]');
+  if (tab) setView(tab.dataset.view);
+};
+$('live').onclick = event => {
+  const row = event.target.closest('.line[data-id]');
+  if (row) { select(Number(row.dataset.id)); return; }
+  // A target line opens the tests of that target
+  const target = event.target.closest('tr[data-target]');
+  if (target) {
+    for (const t of targets) hiddenTargets.add(t);
+    hiddenTargets.delete(target.dataset.target);
+    setView('tests');
+  }
+};
+// Scrolling the results up pauses following them, the note says so
+$('results').onscroll = () => {
+  const box = $('results');
+  const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  $('results-note').textContent = $('results-note').textContent
+    .replace(/ · .*/, '') + (follow ? '' : ' · scrolled up, new results are below');
+};
+$('status-chips').onclick = event => {
+  const chip = event.target.closest('[data-status]');
+  if (!chip) return;
+  statusFilter = chip.dataset.status;
+  scheduleRender();
+};
+$('target-chips').onclick = event => {
+  const chip = event.target.closest('[data-target]');
+  if (!chip) return;
+  const target = chip.dataset.target;
+  if (!hiddenTargets.delete(target)) hiddenTargets.add(target);
+  scheduleRender();
+};
+$('search').oninput = event => {
+  search = event.target.value.toLowerCase().split(/\s+/).filter(Boolean);
+  scheduleRender();
+};
+$('expand').onclick = () => { closed.clear(); render(); };
+$('collapse').onclick = () => {
+  for (const row of rows.values()) {
+    const parts = row.name.split(':');
+    for (let i = 1; i < parts.length; i++)
+      closed.add(parts.slice(0, i).join(':'));
+  }
+  render();
+};
+document.onkeydown = event => {
+  if (event.key === 'Escape') select(null);
+  if (document.activeElement !== $('search')
+      && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (event.key === '1') setView('live');
+    if (event.key === '2') setView('tests');
+  }
+  if (event.key === '/' && document.activeElement !== $('search')) {
+    event.preventDefault();
+    $('search').focus();
+  }
+};
+</script>
+</body>
+</html>

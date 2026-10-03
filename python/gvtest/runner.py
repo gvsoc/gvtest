@@ -284,10 +284,18 @@ class Runner():
 
         return False
 
-    def is_skipped(self, name: str) -> bool:
+    def is_skipped(self, name: str, target_name: str | None = None) -> bool:
+        """Whether --skip skips the test of this name on this target: a skip
+        is a test name prefix, ``<prefix>@<target>`` skips it on that target
+        only."""
         if self.test_skip_list is not None:
             for skip in self.test_skip_list:
-                if name.find(skip) == 0:
+                prefix, at, skip_target = skip.rpartition('@')
+                if not at:
+                    prefix = skip
+                elif skip_target != target_name:
+                    continue
+                if name.find(prefix) == 0:
                     return True
 
         return False

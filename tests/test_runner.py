@@ -103,6 +103,13 @@ class TestFiltering:
         assert r.is_skipped('suite:skip_me:subtest') is True
         assert r.is_skipped('suite:keep_me') is False
 
+    def test_skip_on_one_target(self):
+        r = Runner(properties=[], flags=[],
+                   test_skip_list=['suite:skip_me@chip_a'])
+        assert r.is_skipped('suite:skip_me:subtest', 'chip_a') is True
+        assert r.is_skipped('suite:skip_me', 'chip_b') is False
+        assert r.is_skipped('suite:skip_me') is False
+
     def test_no_skip_list(self):
         r = Runner(properties=[], flags=[])
         assert r.is_skipped('anything') is False

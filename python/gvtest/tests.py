@@ -596,7 +596,9 @@ class TestCommon(object):
         self.runner.count_test()
         self.runs.append(run)
         self.runner.notify('test_counted', run)
-        if self.runner.is_skipped(self.get_full_name()) or self.skipped is not None:
+        target_name = self.target.name if self.target is not None else None
+        if self.runner.is_skipped(self.get_full_name(), target_name) or \
+                self.skipped is not None:
             if self.skipped is not None:
                 run.skip_message = self.skipped
             else:

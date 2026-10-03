@@ -391,7 +391,9 @@ class PytestTestset:
             test.runs.append(run)
             self.runner.notify('test_counted', run)
 
-            if (self.runner.is_skipped(test.get_full_name())
+            if (self.runner.is_skipped(
+                    test.get_full_name(),
+                    test.target.name if test.target is not None else None)
                     or test.skipped is not None):
                 # Handle skipped tests
                 run.skip_message = (

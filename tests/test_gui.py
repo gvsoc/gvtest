@@ -13,7 +13,8 @@ import pytest
 
 from gvtest.runner import Runner
 from gvtest.events import RunListener
-from gvtest.gui import WebGui
+import gvtest.gui
+from gvtest.gui import WebGui, run_gui
 
 
 TESTSET = '''
@@ -304,3 +305,44 @@ class TestWebGui:
     def test_quit_is_queued(self, gui):
         request(gui, '/api/quit', body={})
         assert gui.commands.get(timeout=5) == ('quit',)
+
+
+class TestGuiExit:
+    """run_gui(exit_unwatched=True), as a CI job runs it."""
+
+    def test_token_given(self, make_runner):
+        gui = WebGui(make_runner(), '127.0.0.1', 0, token='build-12')
+        assert gui.url.endswith('/?token=build-12')
+        gui.server.server_close()
+
+    def test_leaves_when_no_page_is_open(self, make_runner):
+        runner = make_runner()
+        runner.start()
+        start = time.monotonic()
+        run_gui(runner, '127.0.0.1', 0, exit_unwatched=True)
+        assert time.monotonic() - start < 10
+        assert runner.stats.stats['passed'] == 1
+
+    def test_waits_for_the_open_page(self, make_runner, monkeypatch):
+        monkeypatch.setattr(gvtest.gui, '_UNWATCHED_S', 0.5)
+        runner = make_runner()
+        runner.start()
+        guis = []
+
+        class Gui(WebGui):
+            def __init__(self, *args):
+                super().__init__(*args)
+                guis.append(self)
+                # A page open from the start
+                self.page = self.subscribe()[1]
+
+        monkeypatch.setattr(gvtest.gui, 'WebGui', Gui)
+        thread = threading.Thread(
+            target=run_gui, args=(runner, '127.0.0.1', 0, None, True))
+        thread.start()
+        time.sleep(3)
+        assert thread.is_alive()
+        assert guis[0].state == 'idle'
+        guis[0].unsubscribe(guis[0].page)
+        thread.join(timeout=10)
+        assert not thread.is_alive()

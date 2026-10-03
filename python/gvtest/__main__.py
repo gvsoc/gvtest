@@ -36,7 +36,8 @@ def tests(runner, args):
 def run(runner, args):
     if args.gui:
         from gvtest.gui import run_gui
-        run_gui(runner, args.gui_host, args.gui_port)
+        run_gui(runner, args.gui_host, args.gui_port, args.gui_token,
+                args.gui_exit)
     else:
         runner.run()
 
@@ -139,6 +140,16 @@ parser.add_argument(
     "and run again, until Quit in the page or Ctrl+C."
 )
 parser.add_argument(
+    "--gui-exit", dest="gui_exit", action="store_true",
+    help="With --gui, leave once the tests are done unless a page is "
+    "open, in which case leave when the last one is closed (for a CI job)"
+)
+parser.add_argument(
+    "--gui-token", dest="gui_token", default=None,
+    help="Token of the GUI URL, e.g. the build tag of a CI job, so that "
+    "the URL is known in advance. Default: a random one"
+)
+parser.add_argument(
     "--gui-host", dest="gui_host", default='127.0.0.1',
     help="Address the GUI listens on; 0.0.0.0 makes it reachable from "
     "other machines. Default: %(default)s"
@@ -166,7 +177,8 @@ parser.add_argument(
 parser.add_argument(
     "--skip", dest="test_skip_list", default=None,
     action="append",
-    help="Specify a test to be skipped"
+    help="Specify a test to be skipped (a test name prefix), "
+    "<test>@<target> to skip it on that target only"
 )
 parser.add_argument(
     "--cmd", dest="commands", action="append",

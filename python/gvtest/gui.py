@@ -68,6 +68,12 @@ _MAX_OUTPUT_CHARS = 1_000_000
 # browser tab gets noticed
 _KEEPALIVE_S = 15
 
+# With --gui-exit, once the tests are done, open pages are pinged this
+# often, so that a closed one is noticed, and gvtest leaves when none has
+# been open for _UNWATCHED_S (a page being reloaded comes back meanwhile)
+_PING_S = 1
+_UNWATCHED_S = 3
+
 # Statuses a run can be started again from
 _RERUNNABLE = ('passed', 'failed', 'cancelled')
 
@@ -75,10 +81,11 @@ _RERUNNABLE = ('passed', 'failed', 'cancelled')
 class WebGui(RunListener):
     """Follows the run as a listener and serves it over HTTP."""
 
-    def __init__(self, runner: Any, host: str, port: int | None) -> None:
+    def __init__(self, runner: Any, host: str, port: int | None,
+                 token: str | None = None) -> None:
         self.runner: Any = runner
         self.lock: threading.Lock = threading.Lock()
-        self.token: str = secrets.token_urlsafe(8)
+        self.token: str = token or secrets.token_urlsafe(8)
         # One row per (test, target); a rerun reuses the row of the run
         # it replaces, so the ids the page holds stay valid.
         self.rows: list[dict[str, Any]] = []
@@ -88,6 +95,8 @@ class WebGui(RunListener):
         self.pass_started: float | None = None
         self.pass_ended: float | None = None
         self._clients: list[queue.SimpleQueue[str | None]] = []
+        # When the last page was closed
+        self._unwatched_since: float = time.monotonic()
         # Row id -> events of the /api/tail streams waiting for output
         self._tails: dict[int, list[threading.Event]] = {}
         # Commands for the main thread: ('rerun', ids) or ('quit',).
@@ -251,6 +260,21 @@ class WebGui(RunListener):
         with self.lock:
             if client in self._clients:
                 self._clients.remove(client)
+                if not self._clients:
+                    self._unwatched_since = time.monotonic()
+
+    def unwatched_for(self) -> float | None:
+        """How long no page has been open, None while one is."""
+        with self.lock:
+            if self._clients:
+                return None
+            return time.monotonic() - self._unwatched_since
+
+    def ping(self) -> None:
+        """Make every event stream write, which notices closed pages."""
+        with self.lock:
+            for client in self._clients:
+                client.put('')
 
     def _title(self) -> str:
         names = [t.name for t in self.runner.testsets
@@ -458,6 +482,8 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     data = client.get(timeout=_KEEPALIVE_S)
                 except queue.Empty:
+                    data = ''
+                if data == '':
                     self.wfile.write(b': keepalive\n\n')
                     self.wfile.flush()
                     continue
@@ -501,10 +527,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.gui.remove_tail(row_id, event)
 
 
-def run_gui(runner: Any, host: str, port: int | None) -> None:
+def run_gui(runner: Any, host: str, port: int | None,
+            token: str | None = None, exit_unwatched: bool = False) -> None:
     """Run the tests while serving the GUI, then keep serving it, running
-    again what the page asks for, until the page or Ctrl+C says quit."""
-    gui = WebGui(runner, host, port)
+    again what the page asks for, until the page or Ctrl+C says quit.
+    With exit_unwatched, it also leaves once the tests are done and no
+    page is open: right away if none is, else when the last one closes."""
+    gui = WebGui(runner, host, port, token)
     console = Console(highlight=False, stderr=True)
 
     def announce(text: str) -> None:
@@ -533,8 +562,13 @@ def run_gui(runner: Any, host: str, port: int | None) -> None:
         runner.run()
         while True:
             busy = False
-            announce('Done. Ctrl+C to quit, GUI still at')
-            command = gui.commands.get()
+            if exit_unwatched:
+                command = _wait_unwatched(gui)
+                if command is None:
+                    break
+            else:
+                announce('Done. Ctrl+C to quit, GUI still at')
+                command = gui.commands.get()
             if command[0] == 'quit':
                 break
             busy = True
@@ -546,3 +580,16 @@ def run_gui(runner: Any, host: str, port: int | None) -> None:
             signal.signal(signal.SIGINT, prev_sigint)
         runner.remove_listener(gui)
         gui.close()
+
+
+def _wait_unwatched(gui: WebGui) -> tuple[Any, ...] | None:
+    """The next command of the page, or None once no page is open."""
+    while True:
+        unwatched = gui.unwatched_for()
+        if unwatched is not None and unwatched >= _UNWATCHED_S:
+            return None
+        gui.ping()
+        try:
+            return gui.commands.get(timeout=_PING_S)
+        except queue.Empty:
+            pass

@@ -154,7 +154,7 @@ class Runner():
             stdout: bool = False,
             safe_stdout: bool = False,
             max_output_len: int = -1,
-            max_timeout: int = -1,
+            max_timeout: int | list[str] = -1,
             test_list: list[str] | None = None,
             test_skip_list: list[str] | None = None,
             commands: list[str] | None = None,
@@ -165,7 +165,7 @@ class Runner():
             bench_url: str | None = None,
             bench_build: str | None = None,
             targets: list[str] | None = None,
-            platform: str = 'gvsoc',
+            platform: str | list[str] = 'gvsoc',
             flows: list[str] | None = None,
             report_all: bool = False,
             progress: bool = False,
@@ -186,7 +186,21 @@ class Runner():
         self.safe_stdout: bool = safe_stdout
         self.nb_pending_tests: int = 0
         self.test_skip_list: list[str] | None = test_skip_list
-        self.max_timeout: int = max_timeout
+        # Per-test timeout: a default one, and the ones of the platforms
+        # given as <platform>:<seconds>
+        self.max_timeout: int = -1
+        self.platform_timeouts: dict[str, int] = {}
+        for spec in ([max_timeout] if isinstance(max_timeout, int)
+                     else max_timeout):
+            platform_name, colon, seconds = str(spec).rpartition(':')
+            try:
+                value = int(seconds)
+            except ValueError:
+                raise ValueError(f"Invalid --max-timeout: {spec!r}")
+            if colon:
+                self.platform_timeouts[platform_name] = value
+            else:
+                self.max_timeout = value
         self.max_output_len: int = max_output_len
         self.commands_filter: list[str] | None = commands
         self.commands_exclude: list[str] | None = commands_exclude
@@ -202,7 +216,15 @@ class Runner():
         self.test_list: list[str] | None = test_list
         self.target_names: list[str] = targets if targets is not None else ['default']
         self._cli_targets_explicit: bool = targets is not None
-        self.platform: str | None = platform
+        # Platforms the tests run on: every target is run on each of them
+        # (one Target instance per platform), unless its gvtest.yaml entry
+        # restricts its platforms.
+        if isinstance(platform, str):
+            platform = [platform]
+        self.platforms: list[str] = [
+            p for item in platform for p in item.replace(',', ' ').split()
+        ] or ['gvsoc']
+        self.platform: str | None = self.platforms[0]
         # Test-flow override from the CLI (--flow); when set it takes
         # precedence over the per-target 'test_flows' gvtest.yaml property
         # consumed by TestsetImpl.new_app_test().
@@ -214,8 +236,12 @@ class Runner():
         # gvtest.yaml-declared target. Always named 'default' so
         # they report under a neutral label; using the first
         # --target would falsely label them as belonging to it.
-        self.default_target: Target = Target('default')
-        self.default_target._is_fallback = True
+        self.default_targets: list[Target] = []
+        for p in self.platforms:
+            default_target = Target('default').with_platform(p)
+            default_target._is_fallback = True
+            self.default_targets.append(default_target)
+        self.default_target: Target = self.default_targets[0]
         # Track sub-testset files that have already been
         # fanned out to their own targets, to prevent
         # duplication when multiple parent targets import
@@ -270,6 +296,22 @@ class Runner():
     def get_platform(self) -> str | None:
         return self.platform
 
+    def get_platforms(self) -> list[str]:
+        return self.platforms
+
+    def get_max_timeout(self, platform: str | None = None) -> int:
+        """The timeout of a test on this platform, -1 for none."""
+        if platform is not None and platform in self.platform_timeouts:
+            return self.platform_timeouts[platform]
+        return self.max_timeout
+
+    def target_label(self, target_name: str, platform: str | None) -> str:
+        """How a run is labelled in the reports: its target, followed by
+        its platform when the tests run on several platforms."""
+        if platform is None or len(self.platforms) == 1:
+            return target_name
+        return f'{target_name}:{platform}'
+
     def get_property(self, name: str) -> str | None:
         return self.properties.get(name)
 
@@ -284,17 +326,23 @@ class Runner():
 
         return False
 
-    def is_skipped(self, name: str, target_name: str | None = None) -> bool:
-        """Whether --skip skips the test of this name on this target: a skip
-        is a test name prefix, ``<prefix>@<target>`` skips it on that target
-        only."""
+    def is_skipped(self, name: str, target_name: str | None = None,
+                   platform: str | None = None) -> bool:
+        """Whether --skip skips the test of this name on this target and
+        platform: a skip is a test name prefix, ``<prefix>@<target>`` skips
+        it on that target only, ``<prefix>@<target>:<platform>`` on that
+        target and platform only."""
         if self.test_skip_list is not None:
             for skip in self.test_skip_list:
                 prefix, at, skip_target = skip.rpartition('@')
                 if not at:
                     prefix = skip
-                elif skip_target != target_name:
-                    continue
+                else:
+                    skip_target, colon, skip_platform = \
+                        skip_target.partition(':')
+                    if skip_target != target_name or \
+                            (colon and skip_platform != platform):
+                        continue
                 if name.find(prefix) == 0:
                     return True
 
@@ -404,17 +452,29 @@ class Runner():
         if (self.bench_db is not None or self.bench_url is not None) \
                 and self.bench_results:
             from datetime import datetime as _dt, timezone as _tz
-            report = {
-                'timestamp': _dt.now(_tz.utc).isoformat(),
-                'git_commit': self._get_git_info('rev-parse', 'HEAD'),
-                'git_branch': self._git_branch(),
-                'platform': self.platform or 'gvsoc',
-                'results': self.bench_results,
-            }
-            if self.bench_db is not None:
-                self._write_bench_db(report)
-            if self.bench_url is not None:
-                self._upload_bench(report)
+            timestamp = _dt.now(_tz.utc).isoformat()
+            git_commit = self._get_git_info('rev-parse', 'HEAD')
+            git_branch = self._git_branch()
+            # A bench run has one platform: one per platform tested
+            for platform in self.platforms:
+                results = [
+                    {k: v for k, v in r.items() if k != 'platform'}
+                    for r in self.bench_results
+                    if r.get('platform', self.platform) == platform
+                ]
+                if not results:
+                    continue
+                report = {
+                    'timestamp': timestamp,
+                    'git_commit': git_commit,
+                    'git_branch': git_branch,
+                    'platform': platform,
+                    'results': results,
+                }
+                if self.bench_db is not None:
+                    self._write_bench_db(report)
+                if self.bench_url is not None:
+                    self._upload_bench(report)
 
     def rerun(self, runs: list[TestRun]) -> None:
         """Run again the tests of the given finished runs, on the same
@@ -456,7 +516,7 @@ class Runner():
 
         # Keep the earlier result of what did not run again, and only
         # the latest benchmark results of what did
-        replaced: set[tuple[str, str]] = set()
+        replaced: set[tuple[str, str, str | None]] = set()
         for old in runs:
             test_runs: list[TestRun] = old.test.runs
             new = next(
@@ -465,7 +525,8 @@ class Runner():
             if new.started:
                 replaced.add((
                     old.test.get_full_name() or '',
-                    old.get_target_name()
+                    old.get_target_name(),
+                    old.get_platform()
                 ))
             else:
                 test_runs[test_runs.index(new)] = old
@@ -473,7 +534,7 @@ class Runner():
                 self.notify('test_finished', old)
         self.bench_results = [
             r for r in self.bench_results[:nb_old_results]
-            if (r['test'], r['target']) not in replaced
+            if (r['test'], r['target'], r.get('platform')) not in replaced
         ] + self.bench_results[nb_old_results:]
 
         self._build_stats()
@@ -666,15 +727,16 @@ class Runner():
                 )
         else:
             # No YAML targets at this level — load with
-            # default target. The testset may import
-            # sub-testsets that DO define targets.
+            # default target, once per platform. The testset
+            # may import sub-testsets that DO define targets.
             # Filtering of untargeted tests happens at
             # enqueue time (see TestCommon.enqueue).
-            self.testsets.append(
-                self.import_testset(
-                    file, self.default_target, None
+            for default_target in self.default_targets:
+                self.testsets.append(
+                    self.import_testset(
+                        file, default_target, None
+                    )
                 )
-            )
 
     def _has_own_targets(self, directory: str) -> bool:
         """Check if directory has its own gvtest.yaml with
@@ -727,7 +789,10 @@ class Runner():
                 continue
             t = Target.from_dict(name, cfg)
             t.config_dir = config_dir
-            targets.append(t)
+            # One instance per platform the target runs on
+            for platform in self.platforms:
+                if t.supports_platform(platform):
+                    targets.append(t.with_platform(platform))
 
         return targets
 
@@ -1091,10 +1156,12 @@ class Runner():
         value_max: float | None = None,
         kind: str | None = None,
         better: str = 'lower',
+        platform: str | None = None,
     ) -> None:
         self.bench_results.append({
             'test': test,
             'target': target,
+            'platform': platform or self.platform,
             'metric': metric,
             'value': value,
             'value_min': value_min,

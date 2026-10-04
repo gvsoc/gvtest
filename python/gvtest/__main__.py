@@ -166,9 +166,10 @@ parser.add_argument(
     "Default: %(default)s bytes"
 )
 parser.add_argument(
-    "--max-timeout", dest="max_timeout", default=-1,
-    type=int,
-    help="Sets maximum timeout allowed for a test"
+    "--max-timeout", dest="max_timeout", default=None,
+    action="append", metavar="[PLATFORM:]SECONDS",
+    help="Sets maximum timeout allowed for a test. Repeatable: "
+    "<platform>:<seconds> sets it for the tests on that platform only"
 )
 parser.add_argument(
     "--test", dest="test_list", default=None,
@@ -178,7 +179,8 @@ parser.add_argument(
     "--skip", dest="test_skip_list", default=None,
     action="append",
     help="Specify a test to be skipped (a test name prefix), "
-    "<test>@<target> to skip it on that target only"
+    "<test>@<target> to skip it on that target only, "
+    "<test>@<target>:<platform> on that target and platform only"
 )
 parser.add_argument(
     "--cmd", dest="commands", action="append",
@@ -191,7 +193,12 @@ parser.add_argument(
     help="Add command to be excluded. Default: %(default)s"
 )
 parser.add_argument("--flags", dest="flags", action="append", default=[], help="Specifies flags")
-parser.add_argument("--platform", dest="platform", default='gvsoc', help="Specifies platform")
+parser.add_argument(
+    "--platform", dest="platform", action="append", default=None,
+    help="Platform the tests run on (default: gvsoc). Repeatable, or a "
+    "comma-separated list: every target is then run on each platform, "
+    "unless its gvtest.yaml entry restricts them with 'platforms:'"
+)
 parser.add_argument(
     "--flow", dest="flows", action="append", default=None,
     help="Test flow(s) for app tests declared with new_app_test "
@@ -278,7 +285,7 @@ try:
     runner = Runner(
         config=args.config, load_average=args.load_average, nb_threads=args.threads,
         properties=args.properties, stdout=args.stdout, safe_stdout=args.safe_stdout,
-        max_output_len=args.max_output_len, max_timeout=args.max_timeout, test_list=args.test_list,
+        max_output_len=args.max_output_len, max_timeout=args.max_timeout or -1, test_list=args.test_list,
         test_skip_list=args.test_skip_list,
         commands=args.commands,
         commands_exclude=args.commands_exclude,
@@ -288,7 +295,7 @@ try:
         bench_url=args.bench_url,
         bench_build=args.bench_build,
         targets=args.targets,
-        platform=args.platform, flows=args.flows, report_all=args.all,
+        platform=args.platform or ['gvsoc'], flows=args.flows, report_all=args.all,
         progress=not args.no_progress,
         tolerate_missing=args.tolerate_missing,
         resources=args.resources,

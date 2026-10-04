@@ -1207,6 +1207,141 @@ def testset_build(testset):
 
 
 # ---------------------------------------------------------------------------
+# Several platforms
+# ---------------------------------------------------------------------------
+
+class TestPlatforms:
+    """Tests for runs on several platforms (--platform repeated)."""
+
+    TESTSET = '''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('plat')
+    platform = testset.get_platform()
+    target = testset.get_target().get_name()
+    test = testset.new_test('hello')
+    test.add_command(Shell('run', f'echo {target}@{platform}'))
+    if platform == 'rtl':
+        testset.new_test('rtl_only').add_command(Shell('run', 'true'))
+'''
+
+    def _run(self, tmp_path, yaml, **kwargs):
+        (tmp_path / 'gvtest.yaml').write_text(yaml)
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text(self.TESTSET)
+        r = Runner(properties=[], flags=[], nb_threads=1, **kwargs)
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        return r
+
+    def _outputs(self, r):
+        return sorted(
+            run.output.strip().splitlines()[-1]
+            for ts in r.testsets for test in ts.tests for run in test.runs
+            if test.name == 'hello'
+        )
+
+    def test_platform_list(self):
+        r = Runner(properties=[], flags=[], platform=['gvsoc', 'rtl,vcs'])
+        assert r.get_platforms() == ['gvsoc', 'rtl', 'vcs']
+        assert r.get_platform() == 'gvsoc'
+        assert Runner(properties=[], flags=[]).get_platforms() == ['gvsoc']
+
+    def test_platform_timeouts(self):
+        r = Runner(properties=[], flags=[], max_timeout=['300', 'rtl:1800'])
+        assert r.get_max_timeout('gvsoc') == 300
+        assert r.get_max_timeout('rtl') == 1800
+        assert r.get_max_timeout() == 300
+        r = Runner(properties=[], flags=[], max_timeout=['rtl:1800'])
+        assert r.get_max_timeout('gvsoc') == -1
+        with pytest.raises(ValueError):
+            Runner(properties=[], flags=[], max_timeout=['rtl:long'])
+
+    def test_every_target_on_every_platform(self, tmp_path):
+        r = self._run(tmp_path, 'targets:\n  a: {}\n  b: {}\n',
+                      platform=['gvsoc', 'rtl'])
+        assert self._outputs(r) == [
+            'a@gvsoc', 'a@rtl', 'b@gvsoc', 'b@rtl']
+        # 4 hello + 2 rtl_only
+        assert r.stats.stats['passed'] == 6
+
+    def test_target_platforms_restriction(self, tmp_path):
+        r = self._run(
+            tmp_path,
+            'targets:\n  a: {}\n  b:\n    platforms: [gvsoc]\n',
+            platform=['gvsoc', 'rtl'])
+        assert self._outputs(r) == ['a@gvsoc', 'a@rtl', 'b@gvsoc']
+
+    def test_run_labels(self, tmp_path):
+        r = self._run(tmp_path, 'targets:\n  a: {}\n',
+                      platform=['gvsoc', 'rtl'])
+        labels = sorted(run.config for ts in r.testsets
+                        for test in ts.tests for run in test.runs
+                        if test.name == 'hello')
+        assert labels == ['a:gvsoc', 'a:rtl']
+        # A single platform keeps the target name alone
+        r = self._run(tmp_path, 'targets:\n  a: {}\n', platform='rtl')
+        assert [run.config for test in r.testsets[0].tests
+                for run in test.runs] == ['a', 'a']
+
+    def test_skip_on_target_and_platform(self, tmp_path):
+        r = self._run(tmp_path, 'targets:\n  a: {}\n  b: {}\n',
+                      platform=['gvsoc', 'rtl'],
+                      test_skip_list=['plat:hello@a:rtl'])
+        assert r.stats.stats['skipped'] == 1
+        assert r.stats.stats['passed'] == 5
+        assert r.is_skipped('plat:hello', 'a', 'rtl') is True
+        assert r.is_skipped('plat:hello', 'a', 'gvsoc') is False
+        assert r.is_skipped('plat:hello', 'b', 'rtl') is False
+
+    def test_make_build_dir_per_platform(self, tmp_path):
+        (tmp_path / 'gvtest.yaml').write_text('targets:\n  a: {}\n')
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text('''
+def testset_build(testset):
+    testset.set_name('mk')
+    testset.new_make_test('t')
+''')
+        r = Runner(properties=[], flags=[], platform=['gvsoc', 'rtl'])
+        with patch.dict(os.environ):
+            os.environ.pop('GVSOC_WORKDIR', None)
+            r.add_testset(str(testset_file))
+        flags = sorted(ts.tests[0].flags for ts in r.testsets)
+        assert f'build={tmp_path}/build/a/gvsoc/t' in flags[0]
+        assert 'platform=gvsoc' in flags[0]
+        assert f'build={tmp_path}/build/a/rtl/t' in flags[1]
+        assert 'platform=rtl' in flags[1]
+
+    def test_bench_db_run_per_platform(self, tmp_path):
+        import sqlite3
+        db = tmp_path / 'bench.sqlite'
+        (tmp_path / 'gvtest.yaml').write_text('targets:\n  a: {}\n')
+        (tmp_path / 'testset.cfg').write_text('''
+from gvtest.testsuite import *
+
+def testset_build(testset):
+    testset.set_name('b')
+    test = testset.new_test('t')
+    test.add_command(Shell('run', 'echo "cycles: 10"'))
+    test.add_bench('cycles', r'cycles: (\\d+)')
+''')
+        r = Runner(properties=[], flags=[], nb_threads=1,
+                   platform=['gvsoc', 'rtl'], bench_db=str(db))
+        r.add_testset(str(tmp_path / 'testset.cfg'))
+        r.start()
+        r.run()
+        r.stop()
+        conn = sqlite3.connect(db)
+        rows = conn.execute(
+            'SELECT runs.platform, results.target FROM results '
+            'JOIN runs ON runs.id = results.run_id ORDER BY 1').fetchall()
+        assert rows == [('gvsoc', 'a'), ('rtl', 'a')]
+
+
+# ---------------------------------------------------------------------------
 # Config integration (gvtest.yaml + testset loading)
 # ---------------------------------------------------------------------------
 

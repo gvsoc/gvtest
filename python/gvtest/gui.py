@@ -315,7 +315,9 @@ class WebGui(RunListener):
             {k: r.get(k) for k in (
                 'metric', 'value', 'ref', 'tol', 'ref_type', 'description')}
             for r in list(self.runner.bench_results)
-            if r['test'] == row['name'] and r['target'] == row['target']
+            if r['test'] == row['name']
+            and r['target'] == run.get_target_name()
+            and r.get('platform') == run.get_platform()
         ]
 
         output: str = run.output

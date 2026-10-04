@@ -28,6 +28,7 @@ Missing variables expand to an empty string.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -54,6 +55,7 @@ class Target(object):
             config = '{}'
         self.config: dict[str, Any] = json.loads(config)
         self.config_dir: str | None = None
+        self.platform: str | None = None
 
     @classmethod
     def from_dict(
@@ -64,10 +66,28 @@ class Target(object):
         t.name = name
         t.config = dict(config)
         t.config_dir: str | None = None
+        t.platform: str | None = None
         return t
 
     def get_name(self) -> str:
         return self.name
+
+    def get_platform(self) -> str | None:
+        """The platform this target runs on (set by the runner, one
+        Target instance per platform given with --platform)."""
+        return self.platform
+
+    def supports_platform(self, platform: str) -> bool:
+        """Whether the target runs on this platform: any platform unless
+        its gvtest.yaml entry restricts them with ``platforms:``."""
+        platforms = self.config.get('platforms')
+        return platforms is None or platform in platforms
+
+    def with_platform(self, platform: str) -> Target:
+        """A copy of this target running on the given platform."""
+        t = copy.copy(self)
+        t.platform = platform
+        return t
 
     def get_sourceme(self) -> str | None:
         sourceme = self.config.get('sourceme')

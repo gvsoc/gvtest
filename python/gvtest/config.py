@@ -206,6 +206,16 @@ class ConfigLoader:
                         target_cfg['container'], name,
                         config_file
                     )
+                if target_cfg is not None and \
+                        'platforms' in target_cfg:
+                    platforms = target_cfg['platforms']
+                    if not isinstance(platforms, list) or not all(
+                            isinstance(p, str) for p in platforms):
+                        raise RuntimeError(
+                            f"Invalid 'platforms' for target "
+                            f"'{name}' in {config_file}: "
+                            f"expected a list of platform names"
+                        )
 
     def _validate_container(
         self, container, target_name: str,

@@ -62,6 +62,12 @@ class TestsetImpl(testsuite.Testset):
         return self.runner.get_property(name)
 
     def get_platform(self) -> str | None:
+        """The platform of this testset: the one of its target, as each
+        target is instantiated once per platform given with --platform."""
+        if self.target is not None:
+            platform = getattr(self.target, 'platform', None)
+            if platform is not None:
+                return platform
         return self.runner.get_platform()
 
     def set_name(self, name: str) -> None:
@@ -166,7 +172,10 @@ class TestsetImpl(testsuite.Testset):
         return False
 
     def _display_target(self) -> str:
-        return self.target.name if self.target is not None else ''
+        if self.target is None:
+            return ''
+        return self.runner.target_label(
+            self.target.name, getattr(self.target, 'platform', None))
 
     def dump_tests(self, rows: dict[str, dict], indent_level: int = 0) -> None:
         """Collect this testset's rows into ``rows``.

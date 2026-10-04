@@ -393,7 +393,8 @@ class PytestTestset:
 
             if (self.runner.is_skipped(
                     test.get_full_name(),
-                    test.target.name if test.target is not None else None)
+                    test.target.name if test.target is not None else None,
+                    run.get_platform())
                     or test.skipped is not None):
                 # Handle skipped tests
                 run.skip_message = (
@@ -538,11 +539,9 @@ class PytestTestset:
 
             timeout = self.batch_timeout
             if timeout is None:
-                timeout = (
-                    self.runner.max_timeout
-                    if self.runner.max_timeout != -1
-                    else None
-                )
+                max_timeout = self.runner.get_max_timeout(
+                    getattr(self.target, 'platform', None))
+                timeout = max_timeout if max_timeout != -1 else None
 
             proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE,

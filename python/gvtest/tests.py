@@ -87,7 +87,8 @@ class TestRun(object):
         self.lock: threading.Lock = threading.Lock()
         self.duration: float = 0
         if target is not None:
-            self.config: str = target.name
+            self.config: str = self.runner.target_label(
+                target.name, getattr(target, 'platform', None))
         else:
             self.config = self.runner.config
 
@@ -118,6 +119,13 @@ class TestRun(object):
 
         return self.target.name
 
+    def get_platform(self) -> str | None:
+        if self.target is not None:
+            platform = getattr(self.target, 'platform', None)
+            if platform is not None:
+                return platform
+        return self.runner.get_platform()
+
     def get_stats(self, stats: dict[str, int | float]) -> None:
         stats[self.status] += 1
         stats['duration'] = self.duration
@@ -142,7 +150,7 @@ class TestRun(object):
 
         start_time: datetime = datetime.now()
 
-        timeout: int = self.runner.max_timeout
+        timeout: int = self.runner.get_max_timeout(self.get_platform())
         self.timeout_reached: bool = False
         timer: Timer | None = None
 
@@ -232,6 +240,7 @@ class TestRun(object):
                     self.runner.register_bench_result(
                         test=self.test.get_full_name() or '',
                         target=self.get_target_name(),
+                        platform=self.get_platform(),
                         metric=bench.name,
                         value=value,
                         description=bench.desc,
@@ -270,6 +279,7 @@ class TestRun(object):
         self.runner.register_bench_result(
             test=self.test.get_full_name() or '',
             target=self.get_target_name(),
+            platform=self.get_platform(),
             metric=metric, value=value, description=description,
             ref=ref, tol=tol, ref_type=ref_type,
             value_min=value_min, value_max=value_max)
@@ -539,6 +549,22 @@ class TestCommon(object):
     def get_target(self) -> Any | None:
         return self.target
 
+    def get_platform(self) -> str | None:
+        """The platform this test runs on: the one of its target."""
+        if self.target is not None:
+            platform = getattr(self.target, 'platform', None)
+            if platform is not None:
+                return platform
+        return self.runner.get_platform()
+
+    def build_key(self, target_name: str) -> str:
+        """The build directory component of a test on this target: the
+        target, then the platform when the tests run on several of them, so
+        that the runs on different platforms do not share a build."""
+        if len(self.runner.get_platforms()) > 1:
+            return f'{target_name}/{self.get_platform()}'
+        return target_name
+
     # Called by user to add commands
     def add_command(self, command: testsuite.Command) -> None:
         self.commands.append(command)
@@ -597,7 +623,8 @@ class TestCommon(object):
         self.runs.append(run)
         self.runner.notify('test_counted', run)
         target_name = self.target.name if self.target is not None else None
-        if self.runner.is_skipped(self.get_full_name(), target_name) or \
+        if self.runner.is_skipped(self.get_full_name(), target_name,
+                                  run.get_platform()) or \
                 self.skipped is not None:
             if self.skipped is not None:
                 run.skip_message = self.skipped
@@ -634,7 +661,8 @@ class TestCommon(object):
             }
             rows[key] = entry
         if self.target is not None:
-            tname = self.target.name
+            tname = self.runner.target_label(
+                self.target.name, getattr(self.target, 'platform', None))
             if tname and tname not in entry['targets']:
                 entry['targets'].append(tname)
 
@@ -712,7 +740,7 @@ class MakeTestImpl(TestCommon, testsuite.Test):
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform: str | None = self.runner.get_platform()
+        platform: str | None = self.get_platform()
         if platform is not None:
             self.flags += ' platform=%s' % platform
 
@@ -722,6 +750,7 @@ class MakeTestImpl(TestCommon, testsuite.Test):
 
         # Key the build dir on the target so fanned-out targets don't collide.
         build_key: str = target_name if target_name is not None else runner.get_config()
+        build_key = self.build_key(build_key)
         workdir: str | None = os.environ.get('GVSOC_WORKDIR')
         if workdir is None:
             builddir: str = f'{path}/build/{build_key}/{self.name}'
@@ -768,17 +797,18 @@ class GvrunTestImpl(testsuite.SdkTest, TestCommon):
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform: str | None = self.runner.get_platform()
+        platform: str | None = self.get_platform()
         if platform is not None:
             self.flags += ' --platform=%s' % platform
 
         target = target.get_name()
+        build_key: str = self.build_key(target)
 
         workdir: str | None = os.environ.get('GVSOC_WORKDIR')
         if workdir is None:
-            builddir: str = f'build/{target}/{self.name}'
+            builddir: str = f'build/{build_key}/{self.name}'
         else:
-            builddir = f'{workdir}/tests/{self.get_path()}/{target}'
+            builddir = f'{workdir}/tests/{self.get_path()}/{build_key}'
         self.flags += f' --work-dir={builddir}'
 
         cmd: str = f'gvrun --target {target} {self.flags}'
@@ -821,7 +851,7 @@ class SdkTestImpl(testsuite.SdkTest, TestCommon):
         else:
             self.flags = ' '.join(self.runner.flags)
 
-        platform: str | None = self.runner.get_platform()
+        platform: str | None = self.get_platform()
         if platform is not None:
             self.flags += ' --platform=%s' % platform
 

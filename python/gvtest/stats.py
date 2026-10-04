@@ -60,7 +60,7 @@ class TestRunStats(object):
     def dump_junit(self, test_file: TextIO) -> None:
         if self.run.status != 'excluded':
             target_label = self.run.get_target_name()
-            platform = self.run.runner.platform
+            platform = self.run.get_platform()
             if platform:
                 target_label = f'{target_label}:{platform}'
             fullname = self.run.test.get_full_name()

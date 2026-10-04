@@ -419,9 +419,10 @@ The framework can extract benchmark results from test output:
 | `--load-average LOAD` | Target system load (0.0-1.0) |
 | `--stdout` | Stream test output to stdout in real-time |
 | `--safe-stdout` | Dump test output after test completion |
-| `--max-timeout MAX` | Maximum test timeout in seconds |
+| `--platform PLATFORM` | Platform the tests run on (default: gvsoc). Repeatable: every target runs on each platform |
+| `--max-timeout [PLATFORM:]MAX` | Maximum test timeout in seconds; `<platform>:<s>` for one platform |
 | `--test TEST_LIST` | Run specific tests (can be repeated) |
-| `--skip TEST_SKIP_LIST` | Skip specific tests |
+| `--skip TEST_SKIP_LIST` | Skip specific tests: `<test>`, `<test>@<target>` or `<test>@<target>:<platform>` |
 | `--verbose` | Enable verbose logging |
 | `--dump-all` | Report all tests (not just failed ones) |
 | `--no-fail` | Exit with error code if any test fails |
@@ -434,6 +435,16 @@ Targets can specify:
 - **`sourceme`**: Script to source before running tests
 - **`envvars`**: Environment variables to set
 - **`properties`**: Custom properties accessible in test definitions
+- **`platforms`**: The platforms the target runs on, when not all of them
+
+#### Platforms
+
+With several `--platform` options, every target runs on each platform: a
+testset is built once per target and per platform, `testset.get_platform()`
+returning the platform of that instance. A target entry restricts its
+platforms with `platforms: [gvsoc]`. Runs are labelled `<target>:<platform>`,
+the built-in gvrun/make tests build in `build/<target>/<platform>/...`, and
+the benchmark results make one bench run per platform.
 
 The `gvtest_cmd_stub` helper script sources environment files before executing commands.
 

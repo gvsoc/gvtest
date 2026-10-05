@@ -1275,6 +1275,50 @@ def testset_build(testset):
             platform=['gvsoc', 'rtl'])
         assert self._outputs(r) == ['a@gvsoc', 'a@rtl', 'b@gvsoc']
 
+    def test_target_platform_on_cli(self, tmp_path):
+        # <target>:<platform> runs it on that platform only, a plain
+        # --target on the platforms of --platform
+        yaml = 'targets:\n  a: {}\n  b: {}\n'
+        r = self._run(tmp_path, yaml, targets=['a:rtl', 'a:gvsoc', 'b'])
+        assert r.get_platforms() == ['rtl', 'gvsoc']
+        assert self._outputs(r) == ['a@gvsoc', 'a@rtl', 'b@gvsoc']
+        r = self._run(tmp_path, yaml, targets=['a:gvsoc,rtl', 'b:rtl'],
+                      platform=['vcs'])
+        assert self._outputs(r) == ['a@gvsoc', 'a@rtl', 'b@rtl']
+        r = self._run(tmp_path, yaml, targets=['a:rtl', 'b'],
+                      platform=['vcs'])
+        assert self._outputs(r) == ['a@rtl', 'b@vcs']
+        # The platforms: of the gvtest.yaml entry still apply
+        r = self._run(tmp_path, 'targets:\n  a:\n    platforms: [gvsoc]\n',
+                      targets=['a:gvsoc', 'a:rtl'])
+        assert self._outputs(r) == ['a@gvsoc']
+
+    def test_target_platform_and_qualifiers(self, tmp_path):
+        from gvtest.runner import _split_target_platforms
+        assert _split_target_platforms('acu200') == ('acu200', [])
+        assert _split_target_platforms('acu200:rtl') == ('acu200', ['rtl'])
+        assert _split_target_platforms('snitch:core_type=fast') == \
+            ('snitch:core_type=fast', [])
+        assert _split_target_platforms('snitch:core_type=fast:rtl') == \
+            ('snitch:core_type=fast', ['rtl'])
+        assert _split_target_platforms('p:chip/soc/fic=true') == \
+            ('p:chip/soc/fic=true', [])
+        r = self._run(tmp_path, 'targets:\n  "s:x=1": {}\n',
+                      targets=['s:x=1:rtl'])
+        assert self._outputs(r) == ['s:x=1@rtl']
+
+    def test_default_target_platform_on_cli(self, tmp_path):
+        # Untargeted tests (no gvtest.yaml targets) with --target default:<p>
+        testset_file = tmp_path / 'testset.cfg'
+        testset_file.write_text(self.TESTSET)
+        r = Runner(properties=[], flags=[], nb_threads=1,
+                   targets=['default:rtl'], platform=['gvsoc', 'rtl'])
+        r.add_testset(str(testset_file))
+        r.start()
+        r.run()
+        r.stop()
+        assert self._outputs(r) == ['default@rtl']
+
     def test_run_labels(self, tmp_path):
         r = self._run(tmp_path, 'targets:\n  a: {}\n',
                       platform=['gvsoc', 'rtl'])

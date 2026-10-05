@@ -144,6 +144,17 @@ class Worker(threading.Thread):
             test.run()
 
 
+
+def _split_target_platforms(spec: str) -> tuple[str, list[str]]:
+    """Split a --target <name>[:<platform>[,<platform>...]] into the
+    target name and its platforms. The platforms are a last ':' part
+    without '=', which the qualifiers of a target name always have
+    (e.g. snitch:core_type=fast)."""
+    name, colon, last = spec.rpartition(':')
+    if not colon or not name or '=' in last or '/' in last:
+        return spec, []
+    return name, [p for p in last.replace(',', ' ').split()]
+
 class Runner():
 
     def __init__(
@@ -217,16 +228,35 @@ class Runner():
         self.bench_upload_error: str | None = None
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
-        self.target_names: list[str] = targets if targets is not None else ['default']
-        self._cli_targets_explicit: bool = targets is not None
         # Platforms the tests run on: every target is run on each of them
         # (one Target instance per platform), unless its gvtest.yaml entry
-        # restricts its platforms.
-        if isinstance(platform, str):
+        # restricts its platforms. A --target <name>:<platform> runs that
+        # target on that platform only, a plain --target <name> on the
+        # platforms of --platform.
+        if platform is None:
+            platform = []
+        elif isinstance(platform, str):
             platform = [platform]
-        self.platforms: list[str] = [
+        base_platforms: list[str] = [
             p for item in platform for p in item.replace(',', ' ').split()
         ] or ['gvsoc']
+        self.target_platforms: dict[str, list[str]] = {}
+        for spec in (targets if targets is not None else ['default']):
+            name, spec_platforms = _split_target_platforms(spec)
+            target_platforms = self.target_platforms.setdefault(name, [])
+            for p in spec_platforms or base_platforms:
+                if p not in target_platforms:
+                    target_platforms.append(p)
+        self.target_names: list[str] = list(self.target_platforms)
+        self._cli_targets_explicit: bool = targets is not None
+        if targets is None:
+            self.platforms: list[str] = base_platforms
+        else:
+            self.platforms = []
+            for target_platforms in self.target_platforms.values():
+                for p in target_platforms:
+                    if p not in self.platforms:
+                        self.platforms.append(p)
         self.platform: str | None = self.platforms[0]
         # Test-flow override from the CLI (--flow); when set it takes
         # precedence over the per-target 'test_flows' gvtest.yaml property
@@ -301,6 +331,20 @@ class Runner():
 
     def get_platforms(self) -> list[str]:
         return self.platforms
+
+    def get_target_platforms(self, target_name: str) -> list[str]:
+        """The platforms the target is run on: the ones given with it as
+        --target <name>:<platform>, or else all of them."""
+        return self.target_platforms.get(target_name, self.platforms)
+
+    def runs_target_on(self, target_name: str,
+                       platform: str | None) -> bool:
+        """Whether the target, selected with --target, is run on this
+        platform."""
+        if target_name not in self.target_platforms:
+            return False
+        return platform is None or \
+            platform in self.target_platforms[target_name]
 
     def get_max_timeout(self, platform: str | None = None) -> int:
         """The timeout of a test on this platform, -1 for none."""
@@ -793,7 +837,7 @@ class Runner():
             t = Target.from_dict(name, cfg)
             t.config_dir = config_dir
             # One instance per platform the target runs on
-            for platform in self.platforms:
+            for platform in self.get_target_platforms(name):
                 if t.supports_platform(platform):
                     targets.append(t.with_platform(platform))
 

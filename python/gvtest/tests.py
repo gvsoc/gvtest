@@ -603,14 +603,17 @@ class TestCommon(object):
             self.target is not None
             and getattr(self.target, '_is_fallback', False)
         )
+        platform = (
+            self.target.get_platform() if self.target is not None else None
+        )
         if is_fallback:
-            return 'default' not in self.runner.target_names
+            return not self.runner.runs_target_on('default', platform)
         target_name = (
             self.target.name if self.target is not None else None
         )
         if target_name is None:
             return False
-        return target_name not in self.runner.target_names
+        return not self.runner.runs_target_on(target_name, platform)
 
     # Called by runner to enqueue this test to the list of tests ready to be executed
     def enqueue(self) -> None:

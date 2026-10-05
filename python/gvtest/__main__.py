@@ -100,7 +100,10 @@ parser.add_argument('--verbose', dest='verbose', action="store_true", help='Enab
 parser.add_argument('--dump-all', dest='all', action="store_true", help='Report all tests.')
 parser.add_argument(
     "--target", dest="targets", action="append",
-    help="Specify a target for which the tests must be run"
+    help="Specify a target for which the tests must be run. "
+    "<target>:<platform> runs it on that platform only (repeat it for "
+    "several platforms, or <target>:<platform>,<platform>), instead of "
+    "on the platforms of --platform"
 )
 parser.add_argument(
     "--threads", dest="threads", default=0, type=int,
@@ -295,7 +298,7 @@ try:
         bench_url=args.bench_url,
         bench_build=args.bench_build,
         targets=args.targets,
-        platform=args.platform or ['gvsoc'], flows=args.flows, report_all=args.all,
+        platform=args.platform, flows=args.flows, report_all=args.all,
         progress=not args.no_progress,
         tolerate_missing=args.tolerate_missing,
         resources=args.resources,

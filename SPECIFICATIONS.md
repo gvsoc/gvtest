@@ -413,7 +413,7 @@ The framework can extract benchmark results from test output:
 | Option | Description |
 |--------|-------------|
 | `--testset PATH` | Path to testset configuration file |
-| `--target TARGETS` | Specify target platform(s) to test |
+| `--target TARGETS` | Specify target platform(s) to test; `<target>:<platform>` runs it on that platform only |
 | `--config CONFIG` | Configuration name (default: 'default') |
 | `--threads THREADS` | Number of worker threads (0 = auto) |
 | `--load-average LOAD` | Target system load (0.0-1.0) |
@@ -442,7 +442,12 @@ Targets can specify:
 With several `--platform` options, every target runs on each platform: a
 testset is built once per target and per platform, `testset.get_platform()`
 returning the platform of that instance. A target entry restricts its
-platforms with `platforms: [gvsoc]`. Runs are labelled `<target>:<platform>`,
+platforms with `platforms: [gvsoc]`. On the command line,
+`--target <target>:<platform>` (repeatable, or `<target>:<p1>,<p2>`) runs that
+target on that platform only, while a plain `--target <target>` runs on the
+`--platform` ones, e.g. `--target acu200:rtl --target acu200:gvsoc --target rv64`.
+A platform is a last `:` part without `=`, so it also follows a target with
+qualifiers (`snitch:core_type=fast:rtl`). Runs are labelled `<target>:<platform>`,
 the built-in gvrun/make tests build in `build/<target>/<platform>/...`, and
 the benchmark results make one bench run per platform.
 

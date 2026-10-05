@@ -601,13 +601,14 @@ class TestUpload:
         with pytest.raises(ValueError):
             parse_build('no-number')
 
-    def test_runner_upload_failure_is_not_fatal(self):
+    def test_runner_upload_failure_is_recorded(self):
         from gvtest.runner import Runner
         r = Runner(properties=[], flags=[])
         r.bench_url = 'http://127.0.0.1:1'
         r.bench_build = 'nightly:3'
-        # Must warn and return, never raise
+        # Must return without raising, the error is kept for the exit status
         r._upload_bench(self._ENVELOPE)
+        assert r.bench_upload_error is not None
 
 
 # ---------------------------------------------------------------------------

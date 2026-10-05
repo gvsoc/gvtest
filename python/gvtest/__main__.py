@@ -218,8 +218,8 @@ parser.add_argument(
     "--bench-url", dest="bench_url",
     default=None,
     help="Bench server base URL (e.g. http://host:8720); benchmark "
-    "results are uploaded there at the end of the run. Upload failures "
-    "are warnings, they never fail the run."
+    "results are uploaded there at the end of the run. A failed upload "
+    "makes gvtest return an error."
 )
 parser.add_argument(
     "--bench-build", dest="bench_build",
@@ -339,6 +339,10 @@ except:
     if runner is not None:
         runner.stop()
     raise
+
+if runner is not None and runner.bench_upload_error is not None:
+  print('Bench: upload failed: ' + runner.bench_upload_error, file = sys.stderr)
+  exit(1)
 
 if args.no_fail and runner is not None and runner.stats.stats['failed'] != 0:
   exit(1)

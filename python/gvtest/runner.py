@@ -212,6 +212,9 @@ class Runner():
         self.bench_check: bool = bench_check
         self.bench_url: str | None = bench_url
         self.bench_build: str | None = bench_build
+        # Why the upload to bench_url failed, if it did: the run then
+        # returns an error, so that a CI job losing its results fails
+        self.bench_upload_error: str | None = None
         self.properties: dict[str, str] = {}
         self.test_list: list[str] | None = test_list
         self.target_names: list[str] = targets if targets is not None else ['default']
@@ -1239,8 +1242,8 @@ class Runner():
         conn.close()
 
     def _upload_bench(self, report: dict[str, Any]) -> None:
-        # The upload is telemetry: a dead or misconfigured server must
-        # never fail the test run (tolerance gating is bench_check's job).
+        # A failed upload does not stop the run, its tests are all done,
+        # but gvtest returns an error at the end (see bench_upload_error).
         import uuid
         from gvtest.bench import upload
         try:
@@ -1252,4 +1255,5 @@ class Runner():
                 f"Bench: uploaded {result.get('results')} result(s) to "
                 f"{self.bench_url} (run_id={result.get('run_id')})")
         except (upload.UploadError, ValueError) as exc:
-            logging.warning(f"Bench: upload failed: {exc}")
+            self.bench_upload_error = str(exc)
+            logging.error(f"Bench: upload failed: {exc}")
